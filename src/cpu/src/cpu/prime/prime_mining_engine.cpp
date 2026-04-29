@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
@@ -208,6 +209,15 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
     Engine_stats_snapshot snap{};
     snap.segments_processed   = m_segments_processed.load(std::memory_order_relaxed);
     snap.candidates_dispatched = m_candidates_dispatched.load(std::memory_order_relaxed);
+    snap.chains_found_by_sieve = m_chains_found_by_sieve.load(std::memory_order_relaxed);
+    snap.chains_pushed_long    = m_chains_pushed_long.load(std::memory_order_relaxed);
+    snap.validate_attempts     = m_validate_attempts.load(std::memory_order_relaxed);
+    snap.validate_rejected_base_not_prime =
+        m_validate_rejected_base_not_prime.load(std::memory_order_relaxed);
+    snap.validate_rejected_below_diff =
+        m_validate_rejected_below_diff.load(std::memory_order_relaxed);
+    snap.validate_rejected_malformed =
+        m_validate_rejected_malformed.load(std::memory_order_relaxed);
     snap.segment_size         = m_cfg.segment_size;
     snap.sessions_published   = m_sessions_published.load(std::memory_order_relaxed);
     snap.pool_thread_count    = m_pool_thread_count;
@@ -256,6 +266,19 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
                     static_cast<std::uint64_t>(snap.chain_histogram[b])
                   + static_cast<std::uint64_t>(local[b]);
                 snap.chain_histogram[b] = stats::saturating_prime_stat(sum);
+            }
+            // Stone 6.9 — same fan-in for the attempted histogram.  Same
+            // calling-contract as snapshot_chain_histogram (sized once,
+            // in-place fetch-add thereafter).
+            const auto local_attempted = s->snapshot_chain_histogram_attempted();
+            const std::size_t na = std::min(local_attempted.size(),
+                                            snap.chain_histogram_attempted.size());
+            for (std::size_t b = 0; b < na; ++b)
+            {
+                const std::uint64_t sum =
+                    static_cast<std::uint64_t>(snap.chain_histogram_attempted[b])
+                  + static_cast<std::uint64_t>(local_attempted[b]);
+                snap.chain_histogram_attempted[b] = stats::saturating_prime_stat(sum);
             }
         }
     }
@@ -476,6 +499,25 @@ void PrimeMiningEngine::run_stats_logger()
                        snap.sessions_published,
                        snap.same_base_short_circuits,
                        snap.allocator_resets);
+
+        // Stone 6.9 — find→test→dispatch funnel diagnostic line.  Logged
+        // separately from the engine "stats:" line so operators (and grep)
+        // can tell at a glance whether candidates_dispatched=0 is caused by
+        // (a) the sieve never producing chains (chains_found_by_sieve low),
+        // (b) Fermat truncation (chains_pushed_long ≪ chains_found_by_sieve),
+        // or (c) the network-difficulty gate silently rejecting otherwise-
+        // valid candidates (validate_rejected_below_diff dominant).
+        m_logger->info("[PrimeMiningEngine] funnel: "
+                       "chains_found_by_sieve={} chains_pushed_long={} "
+                       "validate_attempts={} "
+                       "rejected_base_not_prime={} rejected_below_diff={} "
+                       "rejected_malformed={}",
+                       snap.chains_found_by_sieve,
+                       snap.chains_pushed_long,
+                       snap.validate_attempts,
+                       snap.validate_rejected_base_not_prime,
+                       snap.validate_rejected_below_diff,
+                       snap.validate_rejected_malformed);
     }
 }
 
@@ -566,10 +608,23 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
             // (base_hash, starting_nonce).
             if (!bound || my_base_hash != bound_base_hash)
             {
+                // Stone 6.9 — derive the per-session target Cunningham chain
+                // length from session->nbits the same way Worker_prime does
+                // (nbits / 10'000'000.0).  Floor → ceil so that at difficulty
+                // 6.93 we target length 7 (not 7+1=8, which is what the
+                // hard-coded m_min_chain_length=8 was effectively forcing
+                // and which produced the bucket-7=0 symptom).  Clamp at 2 to
+                // never disable the sieve's chain-cluster filter entirely.
+                const double required_difficulty =
+                    static_cast<double>(session->nbits) / 10000000.0;
+                int target_length = static_cast<int>(
+                    std::ceil(required_difficulty));
+                if (target_length < 2) target_length = 2;
+
                 if (sieve)
                 {
                     const uint1k startprime = my_base_hash + session->starting_nonce;
-                    local_sieve_start = sieve->prepare(startprime);
+                    local_sieve_start = sieve->prepare(startprime, target_length);
                     local_nonce = static_cast<std::uint64_t>(local_sieve_start - my_base_hash);
                 }
                 else
@@ -642,8 +697,35 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     // The wheel was primed once at the chunk top above; the
                     // contiguous sieve_segment() calls advance it correctly.
                     sieve->sieve_segment();
+                    // Stone 6.9 — snapshot the per-sieve "chains found by
+                    // close_chain" diag counter BEFORE find_chains so we can
+                    // attribute the delta produced by THIS segment to the
+                    // engine-level funnel counter.  test_chains() then bumps
+                    // m_diag_chains_pushed_long for chains it pushed onto
+                    // m_long_chain_starts; we mirror that delta to
+                    // m_chains_pushed_long.  Using deltas (rather than reading
+                    // the absolute counter once per loop) keeps the engine
+                    // counter monotone across same-base chunk continuations.
+                    const std::uint64_t found_before =
+                        sieve->m_diag_chain_candidates_found.load(std::memory_order_relaxed);
+                    const std::uint64_t pushed_before =
+                        sieve->m_diag_chains_pushed_long.load(std::memory_order_relaxed);
                     sieve->find_chains(low, false);
                     sieve->test_chains(local_sieve_start);
+                    const std::uint64_t found_after =
+                        sieve->m_diag_chain_candidates_found.load(std::memory_order_relaxed);
+                    const std::uint64_t pushed_after =
+                        sieve->m_diag_chains_pushed_long.load(std::memory_order_relaxed);
+                    if (found_after > found_before)
+                    {
+                        m_chains_found_by_sieve.fetch_add(found_after - found_before,
+                                                         std::memory_order_relaxed);
+                    }
+                    if (pushed_after > pushed_before)
+                    {
+                        m_chains_pushed_long.fetch_add(pushed_after - pushed_before,
+                                                       std::memory_order_relaxed);
+                    }
                     segment_chain_offsets = sieve->m_long_chain_starts;
                 }
 
@@ -708,6 +790,7 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                         // dispatched, flooding the engine with false positives.
                         const double required_difficulty =
                             static_cast<double>(fresh->nbits) / 10000000.0;
+                        m_validate_attempts.fetch_add(1, std::memory_order_relaxed);
                         is_valid = nexusminer::prime::ValidatePrimeCandidate(
                             hashPrime,
                             required_difficulty,
@@ -722,6 +805,30 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                                                 pool_index, offsets.size());
                             }
                             is_valid = false;
+                            m_validate_rejected_malformed.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        else if (!is_valid)
+                        {
+                            // Disambiguate the two ValidatePrimeCandidate
+                            // failure modes using its post-conditions
+                            // (prime_validation.cpp:212-237):
+                            //   * base PrimeCheck failed → vOffsets cleared
+                            //     and nDifficulty set to 0.
+                            //   * difficulty < required → vOffsets retained,
+                            //     nDifficulty > 0 but < required.
+                            // Anything else (offsets non-empty AND
+                            // actual_difficulty == 0) cannot occur today
+                            // but is folded into below_diff for safety.
+                            if (offsets.empty() && actual_difficulty == 0.0)
+                            {
+                                m_validate_rejected_base_not_prime.fetch_add(
+                                    1, std::memory_order_relaxed);
+                            }
+                            else
+                            {
+                                m_validate_rejected_below_diff.fetch_add(
+                                    1, std::memory_order_relaxed);
+                            }
                         }
                     }
                     else
