@@ -6,11 +6,14 @@
 //   * Single publish: consumer builds a session whose epoch_id matches the
 //     feed's epoch_id, and copies block + nbits + on_found out of the
 //     WorkPackage.  Allocator is reset on first publish.
-//   * Same-base-hash short-circuit: a second publish with the same
-//     precomputed prime base hash does NOT reset the cooperative cursor;
+//   * Same-base short-circuit: a second publish with the same
+//     height+hashPrevBlock does NOT reset the cooperative cursor;
 //     same_base_short_circuits counter advances.
-//   * Different-base-hash publish DOES reset the cursor and advance the
+//   * Different-height publish DOES reset the cursor and advance the
 //     allocator_resets counter.
+//   * KEEPALIVE Merkle-rotation: same height+hashPrevBlock, different
+//     hashMerkleRoot (no precomputed hash) still triggers the short-circuit
+//     because the predicate does NOT include hashMerkleRoot.
 //   * Null-payload publish is a no-op (no session built; no counters move).
 //   * Shutdown wakes a consumer parked on wait_for_epoch_after even with
 //     no publish.
@@ -176,8 +179,9 @@ void test_same_base_hash_short_circuit()
     PrimeMiningEngine engine{default_cfg(), feed};
 
     boost::multiprecision::uint1024_t base_hash{"0xdeadbeef"};
+    constexpr std::uint32_t kHeight = 100;
 
-    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base_hash, 100)));
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base_hash, kHeight)));
     auto p1 = engine.wait_for_sessions_published_after(0, 2s);
     print_result("First publish produces 1 session (short-circuit setup)", p1 == 1);
 
@@ -191,9 +195,9 @@ void test_same_base_hash_short_circuit()
     print_result("Cursor advanced 3*S after three next_segment_start() calls",
                  cursor_before_repub == 3 * kSegmentSize);
 
-    // Republish with the same base_hash but a different block height — the
-    // engine should keep the cursor where it is.
-    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base_hash, 101)));
+    // Republish with the same height and hashPrevBlock (same-proof-hash-space),
+    // keeping the same precomputed base_hash.  The engine should keep the cursor.
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base_hash, kHeight)));
     auto p2 = engine.wait_for_sessions_published_after(p1, 2s);
     print_result("Second publish produces 2 sessions total", p2 == 2);
 
@@ -205,8 +209,8 @@ void test_same_base_hash_short_circuit()
                  alloc.current() == cursor_before_repub);
 
     auto session = engine.current_session();
-    print_result("Session block_data refreshed (new height visible)",
-                 session && session->block_data.nHeight == 101);
+    print_result("Session block_data has expected height",
+                 session && session->block_data.nHeight == kHeight);
 }
 
 void test_different_base_hash_resets_cursor()
@@ -384,6 +388,71 @@ void test_shared_allocator_concurrent_no_dupes_no_gaps()
                  alloc.current() == static_cast<std::uint64_t>(kThreads) * kPerThread * S);
 }
 
+void test_same_height_different_merkle_short_circuit()
+{
+    // Regression test for the KEEPALIVE Merkle-rotation bug:
+    // LLL-TAO rotates hashMerkleRoot on every KEEPALIVE (coinbase update).
+    // GetPrimeBaseHash() spans nVersion..nBits in memory which includes
+    // hashMerkleRoot, so base_hash changes on every KEEPALIVE even though
+    // the proof-hash space (hashPrevBlock + nHeight) has not moved.
+    //
+    // The same-base predicate must use hashPrevBlock + nHeight only, NOT
+    // base_hash, so that KEEPALIVE republishes preserve the cooperative
+    // cursor instead of triggering a full allocator reset.
+    auto feed = std::make_shared<WorkerTemplateFeed>();
+    PrimeMiningEngine engine{default_cfg(), feed};
+
+    // Helper that creates a WorkPackage WITHOUT a precomputed base hash so
+    // the consumer computes it via Block_data::GetPrimeBaseHash().  The
+    // Merkle root is varied to simulate KEEPALIVE coinbase rotation.
+    auto make_wp_no_precompute = [](std::uint32_t nbits,
+                                    std::uint32_t height,
+                                    std::uint64_t merkle_discriminator)
+    {
+        ::LLP::CBlock block;
+        block.nVersion = 4;
+        block.nChannel = 2;
+        block.nHeight  = height;
+        block.nBits    = nbits;
+        block.nNonce   = 0;
+        block.hashMerkleRoot = uint512_t{merkle_discriminator};
+        // set_prime_base_hash() intentionally NOT called → consumer computes it.
+        return std::make_shared<WorkPackage>(block, nbits);
+    };
+
+    constexpr std::uint32_t kHeight = 1'000'000u;
+    constexpr std::uint32_t kNbits  = 0x1c00ffffu;
+
+    feed->publish(make_epoch(make_wp_no_precompute(kNbits, kHeight, 1)));
+    auto p1 = engine.wait_for_sessions_published_after(0, 2s);
+    print_result("KEEPALIVE test: first publish produces 1 session", p1 == 1);
+    print_result("KEEPALIVE test: first publish triggers allocator reset",
+                 engine.allocator_resets() == 1);
+
+    // Advance cursor a couple of steps so preservation is observable.
+    auto& alloc = engine.segment_allocator();
+    (void)alloc.next_segment_start();
+    (void)alloc.next_segment_start();
+    const auto cursor_before = alloc.current();
+    print_result("KEEPALIVE test: cursor advanced 2*S",
+                 cursor_before == 2 * kSegmentSize);
+
+    // Republish with SAME height / hashPrevBlock but DIFFERENT hashMerkleRoot.
+    // This is exactly what LLL-TAO does on every KEEPALIVE.  The base_hash
+    // will differ (Merkle is in the ProofHash span) but the proof-hash space
+    // (hashPrevBlock + nHeight) has not changed — the short-circuit must fire.
+    feed->publish(make_epoch(make_wp_no_precompute(kNbits, kHeight, 2)));
+    auto p2 = engine.wait_for_sessions_published_after(p1, 2s);
+    print_result("KEEPALIVE test: second publish produces 2 sessions total", p2 == 2);
+
+    print_result("KEEPALIVE test: same_base_short_circuits() == 1",
+                 engine.same_base_short_circuits() == 1);
+    print_result("KEEPALIVE test: allocator_resets() unchanged (cursor preserved)",
+                 engine.allocator_resets() == 1);
+    print_result("KEEPALIVE test: cursor preserved across Merkle-only rotation",
+                 alloc.current() == cursor_before);
+}
+
 } // namespace
 
 int main()
@@ -398,6 +467,7 @@ int main()
     test_first_publish_builds_session();
     test_same_base_hash_short_circuit();
     test_different_base_hash_resets_cursor();
+    test_same_height_different_merkle_short_circuit();
     test_null_payload_publish_is_noop();
     test_shutdown_wakes_parked_consumer();
     test_register_worker_accepts_null();
