@@ -491,7 +491,7 @@ namespace nexusminer {
                     pop_count.push(popcnt[sieve[n + 3]]);
                     hits_next_four_bytes += pop_count.back(); 
                 }
-                if (!m_chain_in_process && hits_next_four_bytes < m_target_chain_length)
+                if (!m_chain_in_process && hits_next_four_bytes < slot_filter_min())
                 {
                     //not enough prime candidates in the next 120 numbers to make a long enough chain
 
@@ -552,15 +552,14 @@ namespace nexusminer {
 
         void Sieve::close_chain()
         {
-            // Stone 6.9 — gate on the per-session target chain length.  The
-            // hard-coded m_current_chain.m_min_chain_length used to be 8 even
-            // when the network's required Cunningham length was 7, which
-            // pre-discarded every 7-slot candidate before it ever reached
-            // Fermat testing.  Targets < the candidate's slot count would let
-            // through chains that cannot possibly produce a target-length
-            // Fermat run, but that's just diagnostic noise; close_chain is
-            // the *coarse* slot filter — Fermat is the precise one.
-            if (m_current_chain.length() >= m_target_chain_length)
+            // Stone 6.9.1 — gate on slot_filter_min() (= target_length + kSlotFilterSlack)
+            // rather than target_length itself.  Pre-Stone-6.9 the hard-coded 8 was
+            // implicitly providing slack=1 when the network difficulty implied target=7;
+            // dropping that slack in #672 caused chains_found_by_sieve to balloon ~10x
+            // and burned ~25-29% of CPU throughput in Fermat thrash on candidates that
+            // could never produce a length-target Fermat run.  See the funnel line in
+            // the PR body for the diagnostic numbers.
+            if (m_current_chain.length() >= slot_filter_min())
             {
                 //we found a chain candidate.  save it.
                 m_chain.push_back(m_current_chain);
