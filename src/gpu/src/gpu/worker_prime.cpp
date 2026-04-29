@@ -19,14 +19,14 @@ namespace gpu
 {
 namespace
 {
-constexpr std::size_t kPrimeOffsetFractionBytes = sizeof(std::uint32_t);
-constexpr std::size_t kMaxSerializedPrimeOffsets = 10;
-constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
+// Re-export the canonical constants from prime_validation.hpp.  See
+// cpu/worker_prime.cpp for the rationale (single source of truth, no drift).
+using nexusminer::prime::kPrimeOffsetFractionBytes;
+using nexusminer::prime::kMinSerializedPrimeOffsets;
+using nexusminer::prime::kMaxSerializedPrimeOffsets;
+using nexusminer::prime::is_well_formed_prime_offsets;
 
-bool has_expected_prime_offsets(const std::vector<uint8_t>& offsets)
-{
-	return offsets.size() == kMaxSerializedPrimeOffsets;
-}
+constexpr std::size_t kBoostUint1kLimbBytes = sizeof(boost::multiprecision::limb_type);
 }
 
 Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config::Worker_config& config)
@@ -302,14 +302,14 @@ void Worker_prime::run()
 			m_logger->info("Actual difficulty {} required {}", actual_difficulty, required_difficulty);
 			if (is_valid)
 			{
-				assert(has_expected_prime_offsets(offsets) &&
-					"Expected 10 total bytes (6 prime-gap bytes + 4-byte LE fraction)");
-				if (!has_expected_prime_offsets(offsets))
+				assert(is_well_formed_prime_offsets(offsets) &&
+					"Expected vOffsets size in [kMin..kMax] (gap bytes + 4-byte LE fraction)");
+				if (!is_well_formed_prime_offsets(offsets))
 				{
-					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected {} total bytes = {} prime-gap bytes + {}-byte LE fraction)"),
+					m_logger->error(spdlog::fmt_lib::runtime(m_log_leader + "Rejecting prime candidate with malformed serialized offsets ({} bytes, expected size in [{}..{}] = (chain_length - 1) gap bytes + {}-byte LE fraction)"),
 						offsets.size(),
+						kMinSerializedPrimeOffsets,
 						kMaxSerializedPrimeOffsets,
-						kMaxSerializedPrimeOffsets - kPrimeOffsetFractionBytes,
 						kPrimeOffsetFractionBytes);
 					continue;
 				}

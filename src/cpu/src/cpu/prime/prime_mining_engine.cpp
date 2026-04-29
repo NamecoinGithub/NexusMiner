@@ -466,8 +466,9 @@ uint1024_t boost_uint1k_to_uint1024(const uint1k& p)
     return result;
 }
 
-constexpr std::size_t kPrimeOffsetFractionBytes = sizeof(std::uint32_t);
-constexpr std::size_t kMaxSerializedPrimeOffsets = 10;
+constexpr std::size_t kPrimeOffsetFractionBytes = nexusminer::prime::kPrimeOffsetFractionBytes;
+constexpr std::size_t kMinSerializedPrimeOffsets = nexusminer::prime::kMinSerializedPrimeOffsets;
+constexpr std::size_t kMaxSerializedPrimeOffsets = nexusminer::prime::kMaxSerializedPrimeOffsets;
 
 }  // namespace
 
@@ -829,13 +830,16 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                             required_difficulty,
                             offsets,
                             actual_difficulty);
-                        if (is_valid && offsets.size() != kMaxSerializedPrimeOffsets)
+                        if (is_valid && !nexusminer::prime::is_well_formed_prime_offsets(offsets))
                         {
                             if (m_logger)
                             {
                                 m_logger->error("[PrimeMiningEngine] pool[{}] rejecting "
-                                                "candidate with malformed offsets ({} bytes)",
-                                                pool_index, offsets.size());
+                                                "candidate with malformed offsets ({} bytes, "
+                                                "expected size in [{}..{}])",
+                                                pool_index, offsets.size(),
+                                                kMinSerializedPrimeOffsets,
+                                                kMaxSerializedPrimeOffsets);
                             }
                             is_valid = false;
                             m_validate_rejected_malformed.fetch_add(1, std::memory_order_relaxed);
@@ -867,8 +871,14 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     else
                     {
                         // Test seam: no real validation; force-success path.
+                        // Synthesize a minimum-well-formed offsets vector
+                        // (chain length 2 = 1 gap byte + 4-byte fraction = 5
+                        // bytes).  Decoupled from the production gate's upper
+                        // bound so a future bump of kMaxSerializedPrimeOffsets
+                        // can't accidentally make the test seam emit
+                        // malformed-by-the-gate output.
                         is_valid = m_cfg.test_force_candidate_per_segment;
-                        offsets.assign(kMaxSerializedPrimeOffsets, 0);
+                        offsets.assign(kMinSerializedPrimeOffsets, 0);
                     }
 
                     if (!is_valid)
