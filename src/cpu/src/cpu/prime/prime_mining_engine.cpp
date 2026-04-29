@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -354,9 +355,10 @@ void PrimeMiningEngine::run_consumer()
         session->starting_nonce = m_cfg.channel_starting_nonce;
         session->internal_id_for_solution = m_cfg.internal_id_for_solution;
         session->on_found = epoch->on_found;
-        if (const auto& precomputed = work_package->get_prime_base_hash(); precomputed.has_value())
+        const bool precomputed_hash_available = work_package->get_prime_base_hash().has_value();
+        if (precomputed_hash_available)
         {
-            session->base_hash = precomputed.value();
+            session->base_hash = work_package->get_prime_base_hash().value();
         }
         else
         {
@@ -365,13 +367,44 @@ void PrimeMiningEngine::run_consumer()
             session->base_hash = session->block_data.GetPrimeBaseHash();
         }
 
-        // Same-base-hash short-circuit: when the new template targets the
-        // exact same prime proof-hash space, preserve cooperative cursor
-        // progress.  This mirrors the per-worker `same_active_search`
-        // optimisation in Worker_prime — restarting would only throw away
-        // sieve/segment work the pool has already done.
+        // Same-proof-space short-circuit: the cooperative cursor is preserved
+        // when the new template targets the same block height as the previous
+        // session (same hashPrevBlock + same nHeight).
+        //
+        // In production LLL-TAO rotates hashMerkleRoot on every KEEPALIVE
+        // (coinbase update), causing base_hash to change each publish even
+        // though the chain tip and proof-hash space have not moved.  Using the
+        // STABLE fields (prev_hash + height) instead of base_hash ensures the
+        // short-circuit fires on those Merkle-rotation-only updates —
+        // eliminating the allocator_resets thrash and the associated nonce-
+        // space restart that otherwise discards all cooperative sieve progress.
+        //
+        // Pool threads still rebind their sieve whenever base_hash changes
+        // (i.e. on every Merkle rotation) because the sieve's starting-
+        // multiples depend on the exact base_hash.  Only the cooperative cursor
+        // (nonce-space offset) is preserved here, not the sieve state.
         const auto previous = m_session.load(std::memory_order_acquire);
-        const bool same_base = previous && previous->base_hash == session->base_hash;
+        const bool same_base =
+            previous
+            && previous->block_data.previous_hash == session->block_data.previous_hash
+            && previous->block_data.nHeight       == session->block_data.nHeight;
+
+        if (m_logger)
+        {
+            // Emit the first 16 hex digits of base_hash so operators can
+            // confirm in live logs whether base_hash is changing each publish.
+            std::ostringstream oss;
+            oss << std::hex << session->base_hash;
+            const auto s = oss.str();
+            const std::string hash_prefix = "0x" + s.substr(0, std::min(s.size(), std::size_t{16}));
+            m_logger->debug("[PrimeMiningEngine] consumer: epoch={} base_hash={} "
+                            "(precomputed={}) height={} same_base={}",
+                            session->epoch_id,
+                            hash_prefix,
+                            precomputed_hash_available,
+                            session->block_data.nHeight,
+                            same_base);
+        }
 
         if (!same_base)
         {

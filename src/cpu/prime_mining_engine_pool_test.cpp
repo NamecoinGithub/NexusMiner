@@ -358,10 +358,11 @@ void test_same_base_republish_preserves_work()
     const auto discards_before = engine.segments_discarded_epoch_changed();
     const auto resets_before = engine.allocator_resets();
 
-    // Republish with SAME base_hash but a different height.  The engine
-    // consumer must NOT reset the cursor; the pool-thread post-segment
-    // re-check must NOT discard (base_hash matches).
-    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base, 2)));
+    // Republish with SAME height (same proof-hash space) — simulates a
+    // KEEPALIVE where only hashMerkleRoot rotates.  The engine consumer
+    // must NOT reset the cursor; the pool-thread post-segment re-check
+    // must NOT discard (hashPrevBlock + nHeight match).
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base, 1)));
     engine.wait_for_sessions_published_after(p1, 2s);
 
     // Let a few more segments drain so any spurious discards would surface.
