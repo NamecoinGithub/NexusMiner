@@ -569,13 +569,20 @@ namespace nexusminer {
                 m_chain_candidate_total_length += m_current_chain.length();
                 m_diag_chain_candidates_found.fetch_add(1, std::memory_order_relaxed);
 
-                // Stone 6.9 — bump the "attempted" histogram bucket indexed
-                // by the candidate's sieve-survivor slot count at the moment
-                // we kept it.  Together with m_chain_histogram (best Fermat
-                // run achieved), operators can compute the per-bucket
-                // survival ratio and immediately see whether a 7:0 cell
-                // reflects "no length-7 candidates" vs "every length-7
-                // candidate aborted before reaching length 7".
+                // Stone 6.9 — bump the "attempted" histogram CUMULATIVELY for
+                // every bucket from 0 up to the candidate's sieve-survivor
+                // slot count.  Bucket k therefore stores the count of chains
+                // that had >= k sieve-survivor slots available to Fermat-test
+                // (matches the doc-comment on Engine_stats_snapshot::
+                // chain_histogram_attempted and prime-mining-flow.md).  This
+                // is what makes
+                //     histogram[k] / attempted[k]
+                // an interpretable per-bucket survival probability: the
+                // denominator must include EVERY chain wide enough to
+                // possibly produce a length-k Fermat run, not just chains
+                // whose width was exactly k.  Cost is bounded by the chain
+                // length cap (~10 increments); negligible vs the Fermat
+                // tests that follow.
                 {
                     // Defensive bounds: length() returns int(m_offsets.size()) and
                     // m_chain_histogram_attempted is sized at >=1 in reset_stats,
@@ -583,8 +590,11 @@ namespace nexusminer {
                     // the explicit max(0, …) keeps the negative→huge-unsigned
                     // pitfall from sneaking back in if length() is ever changed.
                     const int hist_max = static_cast<int>(m_chain_histogram_attempted.size()) - 1;
-                    const int bucket_index = std::max(0, std::min(m_current_chain.length(), hist_max));
-                    m_chain_histogram_attempted[bucket_index]++;
+                    const int top_bucket = std::max(0, std::min(m_current_chain.length(), hist_max));
+                    for (int b = 0; b <= top_bucket; ++b)
+                    {
+                        m_chain_histogram_attempted[b]++;
+                    }
                 }
             }
             m_current_chain.close();

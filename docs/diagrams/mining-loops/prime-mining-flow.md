@@ -109,10 +109,18 @@ The keepalive (B) is the single change that re-populates the chain histogram's b
 
 ### Diagnostic histograms
 
-- `Sieve::m_chain_histogram[k]` — count of chains whose **best Fermat run** reached length `k`.
-- `Sieve::m_chain_histogram_attempted[k]` — count of chains that survived `close_chain`'s slot filter with `k` sieve-survivor slots, indexed at the moment Fermat testing started.
+- `Sieve::m_chain_histogram[k]` — count of chains whose **best Fermat run** reached length `k` (exactly).
+- `Sieve::m_chain_histogram_attempted[k]` — count of chains that survived `close_chain` with **≥ k** sieve-survivor slots (cumulative tail). Bucket `k` is incremented for every chain whose slot count is `k` or greater, so a chain of length 8 bumps buckets 0..8.
 
-The ratio `m_chain_histogram[k] / m_chain_histogram_attempted[k]` is the per-bucket survival probability — a 0/N cell now means "N candidates entered, all were aborted before reaching length k", which is interpretable. A 0/0 cell still means "the sieve never produced a candidate that wide".
+The per-bucket survival probability operators care about is therefore
+
+```
+        Σ_{j≥k} m_chain_histogram[j]
+P(k) = ───────────────────────────────
+          m_chain_histogram_attempted[k]
+```
+
+i.e. "fraction of chains wide enough to possibly produce a length-`k` Fermat run that actually did". A `0/N` cell now means "N candidates entered with ≥k slots, all aborted before reaching length k", which is interpretable. A `0/0` cell still means "the sieve never produced a candidate that wide".
 
 ### Where to look in code
 
