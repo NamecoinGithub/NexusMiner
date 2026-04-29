@@ -74,11 +74,73 @@ void test_optimized_conversion_matches_hex_roundtrip()
     print_result("Optimized uint1024 conversion matches legacy hex round-trip", matches);
 }
 
+void test_is_well_formed_prime_offsets()
+{
+    using nexusminer::prime::is_well_formed_prime_offsets;
+    using nexusminer::prime::kMinSerializedPrimeOffsets;
+    using nexusminer::prime::kMaxSerializedPrimeOffsets;
+    using nexusminer::prime::kPrimeOffsetFractionBytes;
+    using nexusminer::prime::kMaxRecognisedChainLength;
+
+    // The historical bug was rejecting size != 10 (chain length 7).  The new
+    // gate must accept every chain length from 2 (kMin) up through
+    // kMaxRecognisedChainLength (kMax) and reject obvious garbage.
+
+    bool all_valid_lengths_accepted = true;
+    for (std::size_t chain_length = 2;
+         chain_length <= kMaxRecognisedChainLength;
+         ++chain_length)
+    {
+        const std::size_t expected_size =
+            (chain_length - 1) + kPrimeOffsetFractionBytes;
+        std::vector<uint8_t> offsets(expected_size, 0x02);
+        if (!is_well_formed_prime_offsets(offsets))
+        {
+            all_valid_lengths_accepted = false;
+            std::cout << "    chain_length=" << chain_length
+                      << " size=" << expected_size << " unexpectedly rejected\n";
+        }
+    }
+    print_result("is_well_formed_prime_offsets accepts all chain lengths 2..kMax",
+                 all_valid_lengths_accepted);
+
+    // Boundary: the legacy "10 bytes" length (chain length 7) must still pass.
+    print_result("is_well_formed_prime_offsets accepts legacy 10-byte (length 7)",
+                 is_well_formed_prime_offsets(std::vector<uint8_t>(10, 0x02)));
+
+    // The motivating bug: 11 bytes (chain length 8) must now pass.
+    print_result("is_well_formed_prime_offsets accepts 11-byte (length 8) — the bug fix",
+                 is_well_formed_prime_offsets(std::vector<uint8_t>(11, 0x02)));
+
+    // Rejection cases.
+    print_result("is_well_formed_prime_offsets rejects empty",
+                 !is_well_formed_prime_offsets({}));
+    print_result("is_well_formed_prime_offsets rejects size 1",
+                 !is_well_formed_prime_offsets(std::vector<uint8_t>(1, 0)));
+    print_result("is_well_formed_prime_offsets rejects size kMin-1 (just below minimum)",
+                 !is_well_formed_prime_offsets(
+                     std::vector<uint8_t>(kMinSerializedPrimeOffsets - 1, 0)));
+    print_result("is_well_formed_prime_offsets rejects size kMax+1 (just above maximum)",
+                 !is_well_formed_prime_offsets(
+                     std::vector<uint8_t>(kMaxSerializedPrimeOffsets + 1, 0)));
+    print_result("is_well_formed_prime_offsets rejects garbage size 10000",
+                 !is_well_formed_prime_offsets(std::vector<uint8_t>(10000, 0)));
+
+    // Sanity: the constants compose the way the wire format expects.
+    const bool composition_ok =
+        kMinSerializedPrimeOffsets == 1 + kPrimeOffsetFractionBytes &&
+        kMaxSerializedPrimeOffsets ==
+            (kMaxRecognisedChainLength - 1) + kPrimeOffsetFractionBytes;
+    print_result("kMin/kMax compose from chain length + fraction bytes",
+                 composition_ok);
+}
+
 }
 
 int main()
 {
     test_optimized_conversion_matches_hex_roundtrip();
+    test_is_well_formed_prime_offsets();
 
     if (tests_failed != 0)
     {
