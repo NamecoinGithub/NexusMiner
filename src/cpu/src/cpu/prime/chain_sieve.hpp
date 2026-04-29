@@ -53,7 +53,13 @@ namespace nexusminer {
 			const std::string str();
 
 			int m_min_chain_length = 8;
-			int m_min_chain_report_length = 4;
+			// Aligned with GPU (cuda_chain.cuh / gpu chain.hpp).  The CPU value used
+			// to be 4, which caused length-4 candidates to be pushed into
+			// m_long_chain_starts and silently rejected later by the difficulty
+			// gate in the dispatch loop.  Engine mode now overwrites this per
+			// session via Sieve::set_target_length(); 5 is just a safer default
+			// for any caller that bypasses set_target_length().
+			int m_min_chain_report_length = 5;
 			Chain_state m_chain_state = Chain_state::open;
 			uint64_t m_base_offset = 0;
 			std::vector<Chain_offset> m_offsets; //offsets including 0
@@ -92,6 +98,20 @@ namespace nexusminer {
 			// sieve actually uses (callers compare against the requested start to
 			// adjust their nonce bookkeeping).
 			boost::multiprecision::uint1024_t prepare(boost::multiprecision::uint1024_t sieve_start);
+			// Overload that ALSO sets the per-session target chain length in one
+			// call so the set-then-use ordering hazard cannot occur.  A
+			// target_length <= 0 means "use the legacy default" (mining::MIN_CHAIN_LENGTH).
+			boost::multiprecision::uint1024_t prepare(boost::multiprecision::uint1024_t sieve_start,
+			                                          int target_length);
+			// Set the per-session target Cunningham chain length.  Drives:
+			//   * Sieve::close_chain  — minimum slot count to keep a chain candidate
+			//   * Chain::is_there_still_hope  — early-abort threshold during Fermat testing
+			//   * Sieve::test_chains / clean_chains — gate for pushing into m_long_chain_starts
+			// Values < 2 are clamped to 2 (a single-prime "chain" is meaningless to dispatch).
+			// Default after construction is mining::MIN_CHAIN_LENGTH (8) — preserves
+			// pre-Stone behaviour for legacy callers (Worker_prime).
+			void set_target_length(int target_length);
+			int  get_target_length() const { return m_target_chain_length; }
 			void calculate_starting_multiples(const boost::multiprecision::uint1024_t& sieve_start);
 			void calculate_starting_multiples();
 			void test_chains(const boost::multiprecision::uint1024_t& sieve_start);
@@ -126,6 +146,23 @@ namespace nexusminer {
 			//stats
 			std::vector<std::uint32_t> m_chain_histogram;
 
+			// Stone 6.9 — "attempted" companion to m_chain_histogram.  Bumped
+			// once per chain candidate that survived close_chain()'s slot
+			// filter, indexed by the candidate's sieve-survivor slot count
+			// (m_offsets.size()) at the moment we started Fermat-testing it.
+			//
+			// Why this exists: m_chain_histogram only records the BEST Fermat
+			// run actually achieved for each chain.  When is_there_still_hope()
+			// aborts a chain early, that chain still appears in
+			// m_chain_histogram (with a small best-run length), so operators
+			// cannot tell from m_chain_histogram alone whether a 7:0 cell is
+			// "we never got a length-7 candidate" vs "we got 200 of them and
+			// the early-abort predicate killed every one before length 7".
+			// The attempted histogram disambiguates: bucket k now means
+			// "this many chain candidates had >= k sieve-survivor slots
+			// available to Fermat-test".
+			std::vector<std::uint32_t> m_chain_histogram_attempted;
+
 			// Stone 6.8: read-side snapshot of m_chain_histogram for cross-thread
 			// readers (the PrimeMiningEngine pool-thread fan-in path).  Returns a
 			// by-value copy so callers never observe a torn vector mid-resize.
@@ -151,6 +188,14 @@ namespace nexusminer {
 			{
 				return m_chain_histogram;
 			}
+			// Same calling-contract as snapshot_chain_histogram (see above):
+			// the vector is sized once in reset_stats() and only ever in-place
+			// fetch-add'd thereafter, so an external reader can copy it
+			// without observing a torn resize.
+			std::vector<std::uint32_t> snapshot_chain_histogram_attempted() const
+			{
+				return m_chain_histogram_attempted;
+			}
 			uint64_t m_fermat_test_count = 0;
 			uint64_t m_fermat_prime_count = 0;
 			uint64_t m_chain_count = 0;
@@ -167,7 +212,27 @@ namespace nexusminer {
 			std::atomic<uint64_t> m_diag_starting_multiples_us{0};  // µs spent in calculate_starting_multiples (no sort since Stone 1)
 			std::atomic<uint32_t> m_diag_prime_count{0};   // count of sieving primes in m_primes_aos
 
+			// Stone 6.9 — find→test→dispatch funnel diagnostics.  Bumped by the
+			// owning sieve thread; read by the engine stats fan-in.
+			//   * m_diag_chain_candidates_found — chains that survived
+			//     close_chain()'s slot filter (i.e. m_chain.push_back fired).
+			//   * m_diag_chains_started_fermat — chains we actually entered the
+			//     Fermat-test loop for in test_chains() (those for which we
+			//     called get_next_fermat_candidate at least once).
+			//   * m_diag_chains_pushed_long  — chains pushed onto
+			//     m_long_chain_starts (i.e. best Fermat run >= target_length).
+			std::atomic<uint64_t> m_diag_chain_candidates_found{0};
+			std::atomic<uint64_t> m_diag_chains_started_fermat{0};
+			std::atomic<uint64_t> m_diag_chains_pushed_long{0};
+
 		private:
+			// Stone 6.9 — per-session target Cunningham chain length.  Default
+			// preserves legacy Worker_prime behaviour (mining::MIN_CHAIN_LENGTH).
+			// Engine mode rewrites this on every session bind.  Read by the
+			// owning thread only (close_chain / test_chains / clean_chains
+			// / open_chain).
+			int m_target_chain_length{mining::MIN_CHAIN_LENGTH};
+
 			class Fermat_test_candidate {
 			public:
 				uint64_t base_offset = 0;

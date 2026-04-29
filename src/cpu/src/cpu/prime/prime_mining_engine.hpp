@@ -270,6 +270,24 @@ public:
         // sees the same aggregated view.
         stats::Prime_histogram chain_histogram{};
 
+        // Stone 6.9 — "attempted" companion to chain_histogram, fanned-in
+        // from each pool sieve's m_chain_histogram_attempted.  Bucket k =
+        // count of chain candidates that had >= k sieve-survivor slots
+        // available to Fermat-test (i.e. survived close_chain()'s slot
+        // filter).  Combined with chain_histogram (best Fermat run achieved)
+        // operators can distinguish "no length-7 candidates produced by the
+        // sieve" from "many length-7 candidates, all aborted by
+        // is_there_still_hope() before reaching length 7".
+        stats::Prime_histogram chain_histogram_attempted{};
+
+        // Stone 6.9 — find→test→dispatch funnel snapshot.
+        std::uint64_t chains_found_by_sieve{0};
+        std::uint64_t chains_pushed_long{0};
+        std::uint64_t validate_attempts{0};
+        std::uint64_t validate_rejected_base_not_prime{0};
+        std::uint64_t validate_rejected_below_diff{0};
+        std::uint64_t validate_rejected_malformed{0};
+
         // Stone 6.8 — channel-wide best chain difficulty observed since the
         // engine started.  Updated by pool threads via a CAS-loop max
         // whenever ValidatePrimeCandidate flags a candidate as meeting the
@@ -341,6 +359,18 @@ private:
     std::atomic<std::uint64_t>             m_candidates_dispatched{0};
     std::atomic<std::uint64_t>             m_pool_threads_running{0};
     std::atomic<std::uint64_t>             m_pool_threads_crashed{0};
+
+    // Stone 6.9 — find→test→dispatch funnel diagnostics.  Together with the
+    // per-Sieve histograms these answer "of N chains the sieve produced,
+    // M survived Fermat, K reached the dispatch gate, and L of K were
+    // rejected for reason R".  All updated on pool threads with relaxed
+    // ordering; read by the stats logger / Engine_stats_snapshot.
+    std::atomic<std::uint64_t>             m_chains_found_by_sieve{0};
+    std::atomic<std::uint64_t>             m_chains_pushed_long{0};
+    std::atomic<std::uint64_t>             m_validate_attempts{0};
+    std::atomic<std::uint64_t>             m_validate_rejected_base_not_prime{0};
+    std::atomic<std::uint64_t>             m_validate_rejected_below_diff{0};
+    std::atomic<std::uint64_t>             m_validate_rejected_malformed{0};
 
     // Stone 6.5 — chunk-amortisation diagnostic counters.
     std::atomic<std::uint64_t>             m_chunks_drawn{0};

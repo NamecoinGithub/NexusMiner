@@ -90,25 +90,55 @@ namespace nexusminer {
                 return false;
             }
 
-            return ((m_prime_count + m_untested_count) >= m_min_chain_length);
-            
+            // Stone 6.9 — Mirror the GPU implementation in cuda_chain.cu.
+            //
+            // (a) Stats keepalive: once we've already proven 4 Fermat primes
+            //     in this chain, keep testing regardless of the cheap
+            //     totals/contiguous predicates.  This is what populates the
+            //     bucket-6 / bucket-7 cells of the chain histogram (without
+            //     it those cells are deterministically empty whenever the
+            //     target length is > 4).  GPU has shown this has negligible
+            //     throughput cost.
+            if (m_prime_count >= 4)
+            {
+                return true;
+            }
 
-                // a more complex method that screens out more chains   
-                //create a fake temporary chain where all untested candidates pass
-                /*Chain temp_chain(*this);
-                for (auto& offset : temp_chain.m_offsets)
+            // (b) Cheap upper-bound prune on totals.  If even assuming every
+            //     untested slot passes Fermat we can't reach m_min_chain_length
+            //     primes total, give up.  Necessary but not sufficient.
+            if ((m_prime_count + m_untested_count) < m_min_chain_length)
+            {
+                return false;
+            }
+
+            // (c) Tighter prune that respects the predicate/scorer agreement
+            //     we want: the scorer (get_best_fermat_chain) only credits
+            //     contiguous, gap-bounded runs, but the totals predicate above
+            //     ignores both the gap and the already-broken-up structure of
+            //     the chain.  So a chain like
+            //         pass · fail · pass · untested · untested · untested
+            //     can pass (b) (1+3 >= 4) yet be unable to ever produce a
+            //     contiguous run of length m_min_chain_length.  Resolve that
+            //     by simulating "every untested slot passes" through the
+            //     existing scorer and asking whether the resulting longest
+            //     contiguous run reaches the target.  This is the
+            //     dead-coded approach left in place by previous developers;
+            //     it now ships.
+            Chain temp_chain(*this);
+            for (auto& slot : temp_chain.m_offsets)
+            {
+                if (slot.m_fermat_test_status == Fermat_test_status::untested)
                 {
-                    if (offset.m_fermat_test_status == Fermat_test_status::untested)
-                    {
-                        offset.m_fermat_test_status = Fermat_test_status::pass;
-                    }
+                    slot.m_fermat_test_status = Fermat_test_status::pass;
                 }
-                int max_possible_length, offset;
-                uint64_t base_offset;
-                temp_chain.get_best_fermat_chain(base_offset, offset, max_possible_length);
-                return (max_possible_length >= m_min_chain_length);*/
-
-
+            }
+            int max_possible_length = 0;
+            int dummy_offset = 0;
+            uint64_t dummy_base_offset = 0;
+            temp_chain.get_best_fermat_chain(dummy_base_offset, dummy_offset,
+                                             max_possible_length);
+            return (max_possible_length >= m_min_chain_length);
         }
 
         //get the next untested fermat candidate.  if there are none return false.
@@ -229,6 +259,31 @@ namespace nexusminer {
             clear_chains();
             calculate_starting_multiples(m_sieve_start);
             return m_sieve_start;
+        }
+
+        boost::multiprecision::uint1024_t Sieve::prepare(
+            boost::multiprecision::uint1024_t sieve_start, int target_length)
+        {
+            // Stone 6.9 — set target length BEFORE clear_chains so any future
+            // chain we open during the next find_chains() call inherits the
+            // correct per-session m_min_chain_length.  No set-then-use
+            // ordering hazard.
+            set_target_length(target_length);
+            return prepare(sieve_start);
+        }
+
+        void Sieve::set_target_length(int target_length)
+        {
+            // A single-prime "chain" is meaningless to dispatch; clamp to 2.
+            // 0 / negative is treated as "use legacy default".
+            if (target_length <= 0)
+            {
+                m_target_chain_length = mining::MIN_CHAIN_LENGTH;
+            }
+            else
+            {
+                m_target_chain_length = std::max(2, target_length);
+            }
         }
 
         void Sieve::calculate_starting_multiples()
@@ -374,6 +429,11 @@ namespace nexusminer {
         void Sieve::reset_stats()
         {
             m_chain_histogram = std::vector<std::uint32_t>(10, 0);
+            // Stone 6.9 — same fixed size as m_chain_histogram so engine fan-in
+            // can iterate buckets in lockstep without an additional bounds
+            // dance.  Sized exactly once here (calling contract for
+            // snapshot_chain_histogram_attempted, see chain_sieve.hpp).
+            m_chain_histogram_attempted = std::vector<std::uint32_t>(10, 0);
             m_fermat_test_count = 0;
             m_fermat_prime_count = 0;
             m_chain_count = 0;
@@ -383,6 +443,9 @@ namespace nexusminer {
             m_diag_inner_hits.store(0, std::memory_order_relaxed);
             m_diag_starting_multiples_us.store(0, std::memory_order_relaxed);
             m_diag_prime_count.store(0, std::memory_order_relaxed);
+            m_diag_chain_candidates_found.store(0, std::memory_order_relaxed);
+            m_diag_chains_started_fermat.store(0, std::memory_order_relaxed);
+            m_diag_chains_pushed_long.store(0, std::memory_order_relaxed);
         }
 
         //search the sieve for chains that meet the minimum length requirement.  Chains can cross segment boundaries.
@@ -412,7 +475,7 @@ namespace nexusminer {
                     pop_count.push(popcnt[sieve[n + 3]]);
                     hits_next_four_bytes += pop_count.back(); 
                 }
-                if (!m_chain_in_process && hits_next_four_bytes < m_min_chain_length)
+                if (!m_chain_in_process && hits_next_four_bytes < m_target_chain_length)
                 {
                     //not enough prime candidates in the next 120 numbers to make a long enough chain
 
@@ -473,13 +536,36 @@ namespace nexusminer {
 
         void Sieve::close_chain()
         {
-            if (m_current_chain.length() >= m_current_chain.m_min_chain_length)
+            // Stone 6.9 — gate on the per-session target chain length.  The
+            // hard-coded m_current_chain.m_min_chain_length used to be 8 even
+            // when the network's required Cunningham length was 7, which
+            // pre-discarded every 7-slot candidate before it ever reached
+            // Fermat testing.  Targets < the candidate's slot count would let
+            // through chains that cannot possibly produce a target-length
+            // Fermat run, but that's just diagnostic noise; close_chain is
+            // the *coarse* slot filter — Fermat is the precise one.
+            if (m_current_chain.length() >= m_target_chain_length)
             {
                 //we found a chain candidate.  save it.
                 m_chain.push_back(m_current_chain);
                 m_chain_count++;
                 m_chain_candidate_max_length = std::max(m_current_chain.length(), m_chain_candidate_max_length);
                 m_chain_candidate_total_length += m_current_chain.length();
+                m_diag_chain_candidates_found.fetch_add(1, std::memory_order_relaxed);
+
+                // Stone 6.9 — bump the "attempted" histogram bucket indexed
+                // by the candidate's sieve-survivor slot count at the moment
+                // we kept it.  Together with m_chain_histogram (best Fermat
+                // run achieved), operators can compute the per-bucket
+                // survival ratio and immediately see whether a 7:0 cell
+                // reflects "no length-7 candidates" vs "every length-7
+                // candidate aborted before reaching length 7".
+                {
+                    int bucket_index = std::min(
+                        static_cast<size_t>(m_current_chain.length()),
+                        m_chain_histogram_attempted.size() - 1);
+                    m_chain_histogram_attempted[bucket_index]++;
+                }
             }
             m_current_chain.close();
             m_chain_in_process = false;
@@ -489,6 +575,11 @@ namespace nexusminer {
         {
             //reset chain in process to the default
             m_current_chain = { base_offset };
+            // Stone 6.9 — propagate the per-session target into the chain so
+            // is_there_still_hope() and any later chain-level decision
+            // honour the same threshold close_chain() used to keep this
+            // candidate.  Default-constructed Chain has m_min_chain_length=8.
+            m_current_chain.m_min_chain_length = m_target_chain_length;
             m_chain_in_process = true;
         }
 
@@ -504,39 +595,53 @@ namespace nexusminer {
             for (auto i = 0; i < m_chain.size(); i++)
             {
                 bool there_is_still_hope = true;
-                int count = 0;
+                int prime_count_this_chain = 0;
+                bool started_fermat = false;
                 uint64_t base_offset;
                 int offset;
                 while (there_is_still_hope)
                 {
                     if (m_chain[i].get_next_fermat_candidate(base_offset, offset))
                     {
+                        if (!started_fermat)
+                        {
+                            started_fermat = true;
+                            m_diag_chains_started_fermat.fetch_add(1, std::memory_order_relaxed);
+                        }
                         boost::multiprecision::uint1024_t candidate = sieve_start + base_offset + offset;
                         bool is_prime = primality_test(candidate);
                         m_chain[i].update_fermat_status(is_prime);
                         if (is_prime)
                         {
-                            count++;
+                            prime_count_this_chain++;
                         }
                         there_is_still_hope = m_chain[i].is_there_still_hope();
                     }
                 }
                 m_chain[i].m_chain_state = Chain::Chain_state::complete;
-                if (count > 0)
+                if (prime_count_this_chain > 0)
                 {
                     int length;
                     m_chain[i].get_best_fermat_chain(base_offset, offset, length);
 
                     //collect stats
-                    int count = std::min(static_cast<size_t>(length), m_chain_histogram.size());
-                    m_chain_histogram[count]++;
+                    int bucket_index = std::min(static_cast<size_t>(length), m_chain_histogram.size() - 1);
+                    m_chain_histogram[bucket_index]++;
 
-                    if (length >= m_chain[i].m_min_chain_report_length)
+                    // Stone 6.9 — push only candidates that meet the
+                    // per-session target chain length.  Pushing shorter ones
+                    // (the legacy m_min_chain_report_length=4 behaviour) just
+                    // floods the dispatch loop with candidates that are
+                    // provably below network difficulty, costing one
+                    // ValidatePrimeCandidate (Fermat + offset walk) per
+                    // wasted candidate and obscuring real dispatch failures.
+                    if (length >= m_target_chain_length)
                     {
                         //we found a long chain.  save it.
-                        m_logger->info("Found a fermat chain of length {}.", length);
+                        m_logger->info("Found a fermat chain of length {} (target={}).",
+                                       length, m_target_chain_length);
                         m_long_chain_starts.push_back(base_offset + offset);
-
+                        m_diag_chains_pushed_long.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
 
@@ -593,14 +698,21 @@ namespace nexusminer {
                     if (length > 0)
                     {
                         //collect stats
-                        int count = std::min(static_cast<size_t>(length), m_chain_histogram.size());
-                        m_chain_histogram[count]++;
+                        int bucket_index = std::min(static_cast<size_t>(length), m_chain_histogram.size() - 1);
+                        m_chain_histogram[bucket_index]++;
                     }
-                    if (length >= chain.m_min_chain_report_length)
+                    // Stone 6.9 — same target gate as test_chains() (see
+                    // chain_sieve.cpp test_chains comment).  m_min_chain_report_length
+                    // remains as a fall-back ONLY for callers that bypassed
+                    // set_target_length(); under engine mode the two thresholds
+                    // are the same.
+                    if (length >= m_target_chain_length)
                     {
                         //we found a long chain.  save it.
-                        m_logger->info("Found a fermat chain of length {}.", length);
+                        m_logger->info("Found a fermat chain of length {} (target={}).",
+                                       length, m_target_chain_length);
                         m_long_chain_starts.push_back(base_offset + offset);
+                        m_diag_chains_pushed_long.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
