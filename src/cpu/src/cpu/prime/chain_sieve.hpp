@@ -222,8 +222,8 @@ namespace nexusminer {
 			//     thread does NOT call reset_stats() during sieving (find_chains
 			//     only does in-place bucket increments), so the vector's
 			//     size/capacity / data pointer are stable against an external
-			//     reader once the Sieve has been published into the engine's
-			//     m_pool_sieves slot.
+			//     reader once the Sieve has published its first
+			//     Pool_histogram_snapshot via publish_histogram_snapshot().
 			//   * Bucket increments are non-atomic uint32_t fetch-add writes,
 			//     which on x86_64 / ARMv8 cannot tear a single 32-bit word; the
 			//     worst observable case is a slightly stale bucket count, which

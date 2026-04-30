@@ -91,20 +91,14 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
     // it can observe them.
     m_consumer = std::thread{&PrimeMiningEngine::run_consumer, this};
 
-    // Stone 6.8 — allocate the per-pool-thread Sieve registry BEFORE pool
-    // threads are launched so the very first pool-thread iteration can safely
-    // publish its slot.  std::make_unique<std::atomic<Sieve*>[]>(n) value-
-    // initialises every slot, which is zero-init for atomic pointer types
-    // under C++20 — no explicit per-slot store() loop is needed.  Pool
-    // threads CAS their own Sieve* in once construction completes and clear
-    // it on exit.
+    // Option 2 — per-pool-thread published histogram snapshots.  Each
+    // Atomic_snapshot is value-initialised (default Pool_histogram_snapshot
+    // has zeroed Prime_histogram arrays) so the stats path can read it
+    // safely even before any pool thread has published.  Allocated BEFORE
+    // pool threads are launched so the very first pool-thread iteration
+    // can safely publish into its slot.
     if (m_pool_thread_count > 0)
     {
-        m_pool_sieves = std::make_unique<std::atomic<Sieve*>[]>(m_pool_thread_count);
-        // Option 2 — per-pool-thread published histogram snapshots.  Each
-        // Atomic_snapshot is value-initialised (default Pool_histogram_snapshot
-        // has zeroed Prime_histogram arrays) so the stats path can read it
-        // safely even before any pool thread has published.
         m_pool_histogram_snapshots =
             std::make_unique<stats::Atomic_snapshot<Pool_histogram_snapshot>[]>(
                 m_pool_thread_count);
@@ -571,28 +565,6 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
         if (!m_cfg.test_skip_sieve)
         {
             sieve = std::make_unique<Sieve>();
-        }
-
-        // Stone 6.8 — publish this pool thread's Sieve* into its registry slot
-        // so PrimeMiningEngine::snapshot_stats() can fan-in the chain
-        // histogram.  Slot is owned exclusively by this thread (no contention
-        // with peer pool threads); the snapshot reader only ever loads.
-        // Guard with a scope-exit-style RAII helper so the slot is cleared
-        // even on exception unwinding through the run_pool_thread try block.
-        struct Sieve_slot_guard {
-            std::atomic<Sieve*>* slot{nullptr};
-            ~Sieve_slot_guard()
-            {
-                if (slot)
-                {
-                    slot->store(nullptr, std::memory_order_release);
-                }
-            }
-        } sieve_slot_guard;
-        if (m_pool_sieves && pool_index < m_pool_thread_count)
-        {
-            m_pool_sieves[pool_index].store(sieve.get(), std::memory_order_release);
-            sieve_slot_guard.slot = &m_pool_sieves[pool_index];
         }
 
         // Per-thread per-session bookkeeping.  Reset on every session rebind
