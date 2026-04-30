@@ -116,7 +116,11 @@ Worker_prime::Worker_prime(std::shared_ptr<asio::io_context> io_context, config:
 		fermat_performance_test();
 
 		// Initialize data structures
-		m_chain_histogram = std::vector<std::uint32_t>(10, 0);
+		// Sized to 12 buckets to match cpu::Sieve::reset_stats (Option 5 /
+		// post-#675).  Lengths 10-11 are now observable; bucket 0 / 1 stay
+		// unused for legacy callers but the lockstep size keeps engine
+		// fan-in trivial.
+		m_chain_histogram = std::vector<std::uint32_t>(12, 0);
 		m_segmented_sieve->reset_stats();
 
 		// Mark as initialized

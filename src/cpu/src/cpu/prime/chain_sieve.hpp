@@ -121,26 +121,44 @@ namespace nexusminer {
 			void set_target_length(int target_length);
 			int  get_target_length() const { return m_target_chain_length; }
 
-			// Stone 6.9.1 — slack between the sieve-time slot filter and the
-			// Fermat-time target.  To realistically catch a length-T Fermat run we
-			// need at least T + kSlotFilterSlack sieve-survivor slots so Fermat is
-			// allowed to fail in `kSlotFilterSlack` of them.  At target=7,
-			// Fermat-pass probability is ~0.14% per slot; with zero slack a length-7
-			// run requires every one of 7 slots to pass, which is statistically
-			// impossible.  Empirically slack=1 reproduces pre-Stone-6.9 throughput
-			// at target=7; it also generalises correctly when difficulty moves to
-			// target=8 (slot filter = 9) without the silent regression #672 caused.
+			// Stone 6.9.1 / Option 3 — slack between the sieve-time slot filter
+			// and the Fermat-time target.  To realistically catch a length-T
+			// Fermat run we need at least T + slack sieve-survivor slots so
+			// Fermat is allowed to fail in `slack` of them.  Fermat-pass
+			// probability per slot is ~0.14% (≈ 1 / log(2^1024)); to keep the
+			// observed length-T candidate count steady as T grows by one we
+			// must allow one additional Fermat failure:
 			//
-			// Public so tests can lock down the value without duplicating the magic
-			// number.
-			static constexpr int kSlotFilterSlack = 1;
+			//     slack(T) = max(1, T - 6)
+			//
+			// At T=7 → 1 (preserves pre-Stone-6.9.1 behaviour, matches the
+			// regression baseline pinned by chain_sieve_test).  At T=8 → 2,
+			// T=9 → 3, etc.  A pure constant of 1 (the previous code) caused
+			// a silent throughput cliff every time the network difficulty
+			// stepped up, because the sieve dropped >90% of the candidates
+			// that could have produced a length-T Fermat run.
+			//
+			// Public so tests and operators can introspect the value without
+			// duplicating the formula.
+			static constexpr int slot_filter_slack(int target_length) noexcept
+			{
+				return target_length > 7 ? target_length - 6 : 1;
+			}
+
+			// Backward-compat alias for callers that only need the slack at
+			// the current target_length.  Prefer slot_filter_slack(T) in new
+			// code so tests can pin the formula across multiple T values.
+			int slot_filter_slack() const noexcept
+			{
+				return slot_filter_slack(m_target_chain_length);
+			}
 
 			// Minimum slot count for a chain candidate to be kept by close_chain()
 			// and for find_chains() to consider a 120-integer window worth scanning.
 			// Always >= 2 so a degenerate target_length never disables the filter.
 			int slot_filter_min() const
 			{
-				return std::max(2, m_target_chain_length + kSlotFilterSlack);
+				return std::max(2, m_target_chain_length + slot_filter_slack(m_target_chain_length));
 			}
 			void calculate_starting_multiples(const boost::multiprecision::uint1024_t& sieve_start);
 			void calculate_starting_multiples();
@@ -204,8 +222,8 @@ namespace nexusminer {
 			//     thread does NOT call reset_stats() during sieving (find_chains
 			//     only does in-place bucket increments), so the vector's
 			//     size/capacity / data pointer are stable against an external
-			//     reader once the Sieve has been published into the engine's
-			//     m_pool_sieves slot.
+			//     reader once the Sieve has published its first
+			//     Pool_histogram_snapshot via publish_histogram_snapshot().
 			//   * Bucket increments are non-atomic uint32_t fetch-add writes,
 			//     which on x86_64 / ARMv8 cannot tear a single 32-bit word; the
 			//     worst observable case is a slightly stale bucket count, which

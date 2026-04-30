@@ -402,19 +402,24 @@ private:
     // Stone 6.5 — resolved chunk size (validated to [1, 1024] in ctor).
     std::uint32_t                          m_pool_chunk_segments{0};
 
-    // Stone 6.8 — per-pool-thread Sieve registry for chain-histogram fan-in.
-    // Sized to m_pool_thread_count in the constructor (after pool_thread_count
-    // is resolved).  Each pool thread atomically publishes its Sieve* into
-    // its own slot when the Sieve is constructed, and clears it back to null
-    // before the run_pool_thread() stack frame unwinds (the destructor joins
-    // every pool thread before the engine itself goes away, so snapshot_stats
-    // never observes a dangling pointer).  Slot ownership is per-index, so
-    // writers and readers never contend on the same atomic — readers simply
-    // skip null slots (test_skip_sieve mode, pool thread not yet started, or
-    // pool thread has already cleared its slot).  std::atomic is neither
-    // copy- nor move-constructible, so we hold the slots in a heap array via
-    // unique_ptr rather than std::vector.
-    std::unique_ptr<std::atomic<Sieve*>[]> m_pool_sieves;
+    // Option 2 (Sieve histogram concurrency) — per-pool-thread published
+    // snapshot of the Sieve's chain-length histograms.  Pool threads call
+    // publish_histogram_snapshot() at chunk boundaries from the OWNING
+    // thread; the stats path reads only these snapshots and never touches
+    // the live Sieve*.  Restores the documented invariant in
+    // prime_stats_snapshot.hpp that diagnostic counters are published from
+    // the owning thread.
+    //
+    // Holds (best, attempted) pairs as a single shared_ptr swap so the two
+    // arrays are observed atomically (a half-updated pair would skew the
+    // operator-facing "survival probability" view).
+    struct Pool_histogram_snapshot
+    {
+        stats::Prime_histogram best{};
+        stats::Prime_histogram attempted{};
+    };
+    std::unique_ptr<stats::Atomic_snapshot<Pool_histogram_snapshot>[]>
+        m_pool_histogram_snapshots;
 
     // Stone 6.5 — periodic engine-stats info-level log line (every 30s).
     void                                   run_stats_logger();

@@ -75,14 +75,14 @@ flowchart LR
 
 `Sieve::m_target_chain_length` (default `mining::MIN_CHAIN_LENGTH = 8`) drives **three** filters that must all use the same value to avoid silent drops:
 
-| Stage                        | Old behaviour (≤ Stone 6.8)          | Stone 6.9                                    | Stone 6.9.1                                                                                   |
+| Stage                        | Old behaviour (≤ Stone 6.8)          | Stone 6.9                                    | Stone 6.9.1 / Option 3                                                                        |
 | ---                          | ---                                  | ---                                          | ---                                                                                           |
-| `Sieve::close_chain`         | `length() ≥ 8` (hard-coded)          | `length() ≥ m_target_chain_length`           | `length() ≥ slot_filter_min() == m_target_chain_length + kSlotFilterSlack (=1)`               |
+| `Sieve::close_chain`         | `length() ≥ 8` (hard-coded)          | `length() ≥ m_target_chain_length`           | `length() ≥ slot_filter_min() == m_target_chain_length + slot_filter_slack(target_length)`    |
 | `Sieve::find_chains` (popcount skip) | `hits < 8` (hard-coded via `m_min_chain_length`) | `hits < m_target_chain_length` | `hits < slot_filter_min()` |
 | `Chain::is_there_still_hope` | naïve `prime+untested ≥ 8` predicate | GPU-style: keepalive · totals · fake-pass walk | unchanged (still uses `m_min_chain_length == target_length` exactly) |
 | `test_chains` / `clean_chains` push to `m_long_chain_starts` | `≥ m_min_chain_report_length` (= 4 on CPU, 5 on GPU) | `≥ m_target_chain_length` | unchanged |
 
-> **Why slack=1 matters.** The slot filter (`close_chain`) and the Fermat-time predicate (`is_there_still_hope`) answer different questions: the sieve filter asks "how many *possible* primes does this cluster have?" while the Fermat predicate asks "how many *actual* primes do we need to dispatch?" If both share a single value `target_length`, then a length-target Fermat run requires every single slot to pass Fermat — at 1024-bit Fermat-pass probability ~0.14%, this is statistically impossible. `kSlotFilterSlack` is the explicit failure budget: with slack=1, Fermat is allowed to fail in 1 slot out of `target+1`, which empirically reproduces pre-Stone-6.9 throughput.
+> **Why a target-aware slack matters.** The slot filter (`close_chain`) and the Fermat-time predicate (`is_there_still_hope`) answer different questions: the sieve filter asks "how many *possible* primes does this cluster have?" while the Fermat predicate asks "how many *actual* primes do we need to dispatch?" If both share a single value `target_length`, then a length-target Fermat run requires every single slot to pass Fermat — at 1024-bit Fermat-pass probability ~0.14%, this is statistically impossible. `slot_filter_slack(target_length) = max(1, target_length - 6)` is the explicit failure budget: at target=7 it is 1 (preserves the pre-Stone-6.9.1 baseline that empirically reproduces pre-Stone-6.9 throughput); at target=8 it is 2; at target=9 it is 3 — keeping the per-segment candidate yield steady as the network difficulty climbs and Fermat-pass probability shrinks accordingly. A constant of 1 (the previous code) caused a silent throughput cliff every time the network difficulty stepped up.
 
 Engine mode sets the per-session value via `Sieve::prepare(start, target_length)` on every base-hash rebind:
 
@@ -127,7 +127,7 @@ i.e. "fraction of chains wide enough to possibly produce a length-`k` Fermat run
 
 ### Where to look in code
 
-- `src/cpu/src/cpu/prime/chain_sieve.hpp` — `Sieve::set_target_length` / `prepare(start, target)`, `Sieve::kSlotFilterSlack` / `slot_filter_min()`, `Chain::kHopeKeepaliveThreshold`, the two histograms.
+- `src/cpu/src/cpu/prime/chain_sieve.hpp` — `Sieve::set_target_length` / `prepare(start, target)`, `Sieve::slot_filter_slack(target_length)` / `slot_filter_min()`, `Chain::kHopeKeepaliveThreshold`, the two histograms.
 - `src/cpu/src/cpu/prime/chain_sieve.cpp` — `Chain::is_there_still_hope` (lines ~84–160), `Sieve::close_chain` / `open_chain` (target propagation), `Sieve::find_chains` (popcount-window skip using `slot_filter_min()`), `Sieve::test_chains` / `clean_chains` (target gate).
 - `src/cpu/src/cpu/prime/prime_mining_engine.cpp` — `run_pool_thread` derives `target_length` from `session->nbits`; the dispatch loop disambiguates `ValidatePrimeCandidate` rejection reasons; `run_stats_logger` emits the second `[PrimeMiningEngine] funnel: ...` info line every 30 s.
 - `src/cpu/chain_sieve_test.cpp` — unit tests pinning `set_target_length` clamping and the four `is_there_still_hope` decision branches.

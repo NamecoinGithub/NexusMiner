@@ -91,16 +91,17 @@ PrimeMiningEngine::PrimeMiningEngine(Engine_config cfg,
     // it can observe them.
     m_consumer = std::thread{&PrimeMiningEngine::run_consumer, this};
 
-    // Stone 6.8 — allocate the per-pool-thread Sieve registry BEFORE pool
-    // threads are launched so the very first pool-thread iteration can safely
-    // publish its slot.  std::make_unique<std::atomic<Sieve*>[]>(n) value-
-    // initialises every slot, which is zero-init for atomic pointer types
-    // under C++20 — no explicit per-slot store() loop is needed.  Pool
-    // threads CAS their own Sieve* in once construction completes and clear
-    // it on exit.
+    // Option 2 — per-pool-thread published histogram snapshots.  Each
+    // Atomic_snapshot is value-initialised (default Pool_histogram_snapshot
+    // has zeroed Prime_histogram arrays) so the stats path can read it
+    // safely even before any pool thread has published.  Allocated BEFORE
+    // pool threads are launched so the very first pool-thread iteration
+    // can safely publish into its slot.
     if (m_pool_thread_count > 0)
     {
-        m_pool_sieves = std::make_unique<std::atomic<Sieve*>[]>(m_pool_thread_count);
+        m_pool_histogram_snapshots =
+            std::make_unique<stats::Atomic_snapshot<Pool_histogram_snapshot>[]>(
+                m_pool_thread_count);
     }
 
     // Spawn the pool threads AFTER the consumer is running.  Pool threads must
@@ -245,41 +246,37 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
         snap.nbits = session->nbits;
     }
 
-    // Stone 6.8 — fan-in chain histogram across every live pool thread's
-    // Sieve.  Each pool thread publishes its Sieve* into m_pool_sieves[i]
-    // and clears it on exit; the destructor joins all pool threads BEFORE
-    // the engine itself goes away, so a non-null slot is guaranteed to
-    // outlive this read.  Buckets are saturating-summed into the fixed-size
-    // stats::Prime_histogram array (any over-length input buckets beyond
-    // the array's capacity are dropped — they cannot occur today since the
-    // CPU Sieve sizes m_chain_histogram to 10 < kPrimeHistogramBuckets).
-    if (m_pool_sieves)
+    // Option 2 — fan-in chain histograms across every pool thread's PUBLISHED
+    // snapshot (Pool_histogram_snapshot), NOT the live Sieve*.  Pool threads
+    // republish at chunk boundaries from the owning thread, so the stats
+    // path observes only immutable, atomically-swapped arrays — restoring
+    // the documented invariant in stats/prime_stats_snapshot.hpp:20-22 that
+    // diagnostic counters are published from the owning thread and the
+    // stats path never reads live (mutable) sieve state.
+    //
+    // Buckets are saturating-summed into the fixed-size stats::Prime_histogram
+    // array (any over-length input buckets beyond the array's capacity are
+    // dropped — they cannot occur today since the CPU Sieve sizes
+    // m_chain_histogram to 12 == kPrimeHistogramBuckets after Option 5).
+    if (m_pool_histogram_snapshots)
     {
         for (std::uint32_t i = 0; i < m_pool_thread_count; ++i)
         {
-            Sieve* s = m_pool_sieves[i].load(std::memory_order_acquire);
-            if (!s) continue;
-            const auto local = s->snapshot_chain_histogram();
-            const std::size_t n = std::min(local.size(), snap.chain_histogram.size());
+            const auto local = m_pool_histogram_snapshots[i].load();
+            if (!local) continue;
+            const std::size_t n = std::min(local->best.size(),
+                                           snap.chain_histogram.size());
             for (std::size_t b = 0; b < n; ++b)
             {
-                const std::uint64_t sum =
+                const std::uint64_t sum_best =
                     static_cast<std::uint64_t>(snap.chain_histogram[b])
-                  + static_cast<std::uint64_t>(local[b]);
-                snap.chain_histogram[b] = stats::saturating_prime_stat(sum);
-            }
-            // Stone 6.9 — same fan-in for the attempted histogram.  Same
-            // calling-contract as snapshot_chain_histogram (sized once,
-            // in-place fetch-add thereafter).
-            const auto local_attempted = s->snapshot_chain_histogram_attempted();
-            const std::size_t na = std::min(local_attempted.size(),
-                                            snap.chain_histogram_attempted.size());
-            for (std::size_t b = 0; b < na; ++b)
-            {
-                const std::uint64_t sum =
+                  + static_cast<std::uint64_t>(local->best[b]);
+                snap.chain_histogram[b] = stats::saturating_prime_stat(sum_best);
+                const std::uint64_t sum_attempted =
                     static_cast<std::uint64_t>(snap.chain_histogram_attempted[b])
-                  + static_cast<std::uint64_t>(local_attempted[b]);
-                snap.chain_histogram_attempted[b] = stats::saturating_prime_stat(sum);
+                  + static_cast<std::uint64_t>(local->attempted[b]);
+                snap.chain_histogram_attempted[b] =
+                    stats::saturating_prime_stat(sum_attempted);
             }
         }
     }
@@ -570,34 +567,19 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
             sieve = std::make_unique<Sieve>();
         }
 
-        // Stone 6.8 — publish this pool thread's Sieve* into its registry slot
-        // so PrimeMiningEngine::snapshot_stats() can fan-in the chain
-        // histogram.  Slot is owned exclusively by this thread (no contention
-        // with peer pool threads); the snapshot reader only ever loads.
-        // Guard with a scope-exit-style RAII helper so the slot is cleared
-        // even on exception unwinding through the run_pool_thread try block.
-        struct Sieve_slot_guard {
-            std::atomic<Sieve*>* slot{nullptr};
-            ~Sieve_slot_guard()
-            {
-                if (slot)
-                {
-                    slot->store(nullptr, std::memory_order_release);
-                }
-            }
-        } sieve_slot_guard;
-        if (m_pool_sieves && pool_index < m_pool_thread_count)
-        {
-            m_pool_sieves[pool_index].store(sieve.get(), std::memory_order_release);
-            sieve_slot_guard.slot = &m_pool_sieves[pool_index];
-        }
-
         // Per-thread per-session bookkeeping.  Reset on every session rebind
         // so each new template re-runs the sieve prepare path.
-        std::uint64_t bound_epoch = 0;
-        uint1k bound_base_hash{};
+        //
+        // Option 1 — `bound_session` captures the EngineSession the in-flight
+        // chunk was sieved against.  Dispatch uses this captured pointer so
+        // a KEEPALIVE Merkle-rotation republish that lands mid-chunk doesn't
+        // change which block_data the candidate is dispatched against.  The
+        // post-segment discard now keys on the STABLE (previous_hash, nHeight)
+        // pair (matching the publish-layer discriminator from PR #674) rather
+        // than base_hash, so Merkle-only rotations no longer abandon work.
+        std::shared_ptr<const EngineSession> bound_session;
         std::uint64_t local_nonce = 0;        // session->starting_nonce, rounded
-        uint1k local_sieve_start{};            // == bound_base_hash + local_nonce, rounded
+        uint1k local_sieve_start{};            // == bound_session->base_hash + local_nonce, rounded
         bool bound = false;
 
         while (!m_shutdown.load(std::memory_order_acquire))
@@ -626,21 +608,29 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 continue;
             }
 
-            // ── Capture base_hash up front, BEFORE drawing a segment.  This is
-            // the discriminator that decides whether the post-segment re-check
-            // discards: a same-base republish (different epoch_id, same
-            // base_hash) preserves the cooperative cursor on the consumer
-            // side, so the pool thread's in-flight segment is STILL valid
-            // for the proof-hash space and must be dispatched against the
-            // fresh session's block_data — not discarded.
+            // ── Capture the bound session by shared_ptr up front (Option 1).
+            // The pool thread's in-flight chunk runs against THIS session's
+            // (base_hash, block_data) — not against whatever current_session()
+            // returns later.  This decouples mid-chunk Merkle-rotation
+            // republishes (which change base_hash but preserve the cooperative
+            // cursor) from chunk-abort decisions: the chunk completes against
+            // its bound session, and dispatch uses bound_session->block_data
+            // (the block whose proof-hash the candidate was actually sieved
+            // against).  See post-segment re-check below for the stable
+            // (previous_hash, nHeight) discriminator that DOES abort the chunk.
             const std::uint64_t my_epoch = session->epoch_id;
             const uint1k my_base_hash = session->base_hash;
 
-            // ── Rebind on base-hash change.  Same-base republishes (epoch
+            // ── Rebind on base-hash change.  Sieve starting multiples depend
+            // on the EXACT base_hash, so any base_hash change requires
+            // sieve->prepare() to be re-run.  Same-base republishes (epoch
             // advances but base_hash unchanged) do NOT need a sieve re-prepare
             // because local_sieve_start is determined entirely by
             // (base_hash, starting_nonce).
-            if (!bound || my_base_hash != bound_base_hash)
+            const bool need_rebind = !bound
+                || !bound_session
+                || my_base_hash != bound_session->base_hash;
+            if (need_rebind)
             {
                 // Stone 6.9 — derive the per-session target Cunningham chain
                 // length from session->nbits the same way Worker_prime does
@@ -666,10 +656,12 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     local_nonce = session->starting_nonce;
                     local_sieve_start = my_base_hash + session->starting_nonce;
                 }
-                bound_base_hash = my_base_hash;
                 bound = true;
             }
-            bound_epoch = my_epoch;
+            // Always re-capture the latest bound_session so dispatch uses the
+            // freshest (block_data, on_found, internal_id_for_solution) tuple
+            // that matches the base_hash we are currently sieving against.
+            bound_session = session;
 
             // ── Stone 6.5: draw a CHUNK of contiguous segments from the
             // cooperative cursor.  Inside the chunk the segments are
@@ -780,17 +772,35 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     std::this_thread::sleep_for(m_cfg.simulated_segment_latency);
                 }
 
-                // ── REQUIRED post-segment re-check (Stone 6 correctness
-                // gate).  Runs per SEGMENT, not per chunk: a new template
+                // ── REQUIRED post-segment re-check (Stone 6 correctness gate).
+                // Runs per SEGMENT, not per chunk: a real chain-tip advance
                 // can land at any time and we must not grind the remaining
-                // chunk_segments-1 segments against a stale base_hash.
-                // Discriminator is base_hash (NOT epoch_id): same-base
-                // republishes preserve the cooperative cursor on the
-                // consumer side, so the in-flight segment is still valid
-                // for the proof-hash space and just needs the fresh
-                // session's block_data for dispatch attribution.
+                // chunk_segments-1 segments against a stale tip.
+                //
+                // Option 1 — discriminator is the STABLE (previous_hash, nHeight)
+                // pair (matching the publish-layer same-base discriminator from
+                // PR #674), NOT base_hash.  KEEPALIVE Merkle-rotations rotate
+                // base_hash without advancing the chain tip; the in-flight
+                // sieve output is still cryptographically valid for the OLD
+                // base_hash, so we let the chunk complete and dispatch against
+                // bound_session->block_data (the block whose proof-hash space
+                // the candidates were sieved against).  Only a real chain-tip
+                // change (different prev_hash or nHeight) — or a found-block
+                // consumed signal — abandons the chunk.
+                //
+                // The legacy fast paths (force-rebind on shutdown / null-fresh)
+                // remain: a null `fresh` means the consumer hasn't published
+                // anything yet, which is unreachable here because we already
+                // bound a session at the top of the outer loop, but we keep
+                // the defensive null-check for symmetry with the idle path.
                 auto fresh = current_session();
-                if (!fresh || fresh->base_hash != bound_base_hash
+                const bool tip_advanced =
+                    fresh && bound_session
+                    && (fresh->block_data.previous_hash != bound_session->block_data.previous_hash
+                        || fresh->block_data.nHeight   != bound_session->block_data.nHeight);
+                if (!fresh
+                    || tip_advanced
+                    || (bound_session && bound_session->is_consumed())
                     || fresh->is_consumed())
                 {
                     m_segments_discarded_epoch_changed.fetch_add(1,
@@ -802,11 +812,18 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 (void)my_epoch;  // captured for traceability/future logging
 
                 // ── Dispatch each chain candidate via asio::post.
+                //
+                // Option 1 — dispatch references `bound_session`, NOT `fresh`.
+                // The candidate offsets in this segment came from a sieve
+                // primed against bound_session->base_hash; submitting them
+                // against any other block_data would produce an invalid block.
+                // bound_session is held by shared_ptr so it remains valid
+                // even if a later publish has already swapped m_session.
                 const bool dispatch_real = !m_cfg.test_skip_sieve;
                 bool session_consumed_here = false;
                 for (auto x : segment_chain_offsets)
                 {
-                    Block_data candidate_block = fresh->block_data;
+                    Block_data candidate_block = bound_session->block_data;
                     candidate_block.nNonce = local_nonce + x;
 
                     std::vector<std::uint8_t> offsets;
@@ -815,7 +832,8 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
 
                     if (dispatch_real)
                     {
-                        const uint1k chain_start = bound_base_hash + candidate_block.nNonce;
+                        const uint1k chain_start =
+                            bound_session->base_hash + candidate_block.nNonce;
                         const uint1024_t hashPrime = boost_uint1k_to_uint1024(chain_start);
                         // Required network difficulty derived from the session's
                         // nBits the same way Worker_prime::getNetworkDifficulty()
@@ -823,7 +841,7 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                         // Fermat-passing candidate would be flagged "valid" and
                         // dispatched, flooding the engine with false positives.
                         const double required_difficulty =
-                            static_cast<double>(fresh->nbits) / 10000000.0;
+                            static_cast<double>(bound_session->nbits) / 10000000.0;
                         m_validate_attempts.fetch_add(1, std::memory_order_relaxed);
                         is_valid = nexusminer::prime::ValidatePrimeCandidate(
                             hashPrime,
@@ -908,16 +926,24 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                         }
                     }
 
-                    // Mark the session consumed BEFORE asio::post so other pool
-                    // threads, on their next session re-check, observe the
-                    // consumed bit and idle.  Single-found-block-wins.
-                    fresh->mark_consumed();
+                    // Mark the bound session consumed BEFORE asio::post so other
+                    // pool threads, on their next session re-check, observe the
+                    // consumed bit and idle.  Single-found-block-wins.  Also
+                    // mark `fresh` consumed (when distinct from bound_session)
+                    // because in the Merkle-rotation case the consumer has
+                    // already moved on; idling threads should observe the
+                    // consumed transition on whichever session they re-load.
+                    bound_session->mark_consumed();
+                    if (fresh && fresh.get() != bound_session.get())
+                    {
+                        fresh->mark_consumed();
+                    }
                     m_candidates_dispatched.fetch_add(1, std::memory_order_relaxed);
                     session_consumed_here = true;
 
-                    if (fresh->on_found && m_cfg.io_context)
+                    if (bound_session->on_found && m_cfg.io_context)
                     {
-                        auto session_for_dispatch = fresh;
+                        auto session_for_dispatch = bound_session;
                         auto block_copy = candidate_block;
                         auto captured_offsets = std::move(offsets);
                         ::asio::post(*m_cfg.io_context,
@@ -949,6 +975,35 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     chunk_aborted = true;
                     break;
                 }
+            }
+
+            // Option 2 — at every chunk boundary republish this pool thread's
+            // chain-length histogram snapshot from the OWNING thread.  The
+            // stats path reads only the snapshot (Pool_histogram_snapshot in
+            // the engine), never the live Sieve* — restoring the documented
+            // invariant in stats/prime_stats_snapshot.hpp that diagnostic
+            // counters are published from the worker thread.  Snapshotting
+            // per chunk (instead of per segment) bounds the cost: the histogram
+            // is two 12-element arrays, so the publish is two atomic shared_ptr
+            // swaps amortised over pool_chunk_segments segments (default 64).
+            if (sieve && m_pool_histogram_snapshots
+                && pool_index < m_pool_thread_count)
+            {
+                Pool_histogram_snapshot snap{};
+                const auto best_local = sieve->snapshot_chain_histogram();
+                const auto attempted_local = sieve->snapshot_chain_histogram_attempted();
+                const std::size_t nb = std::min(best_local.size(), snap.best.size());
+                for (std::size_t b = 0; b < nb; ++b)
+                {
+                    snap.best[b] = best_local[b];
+                }
+                const std::size_t na = std::min(attempted_local.size(),
+                                                snap.attempted.size());
+                for (std::size_t b = 0; b < na; ++b)
+                {
+                    snap.attempted[b] = attempted_local[b];
+                }
+                m_pool_histogram_snapshots[pool_index].store(std::move(snap));
             }
         }
     }
