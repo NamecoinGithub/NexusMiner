@@ -1,5 +1,4 @@
 #include "cpu/prime_validation.hpp"
-#include "protocol/falcon_constants.hpp"
 #include "LLC/types/uint1024.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
@@ -10,23 +9,11 @@
 #include <sstream>
 #include <vector>
 
-// Compile-time guarantee that the canonical miner-side maximum vOffsets size
-// (kMaxSerializedPrimeOffsets, source of truth in cpu/prime_validation.hpp)
-// matches the protocol-side wire upper bound (PRIME_VOFFSETS_MAX_SIZE in
-// falcon_constants.hpp, which sizes SUBMIT_BLOCK_WRAPPER_TRITIUM_MAX).
-//
-// The protocol header intentionally does NOT include the cpu/ header to
-// preserve the layering (protocol -> cpu would invert dependency direction).
-// This test TU is the cheap link: it includes both and rejects silent drift.
-// Without this assert, bumping kMaxRecognisedChainLength in prime_validation.hpp
-// without also bumping PRIME_VOFFSETS_MAX_SIZE would silently overrun the
-// SUBMIT_BLOCK_WRAPPER_*_MAX-sized plaintext buffer at serialization time.
-static_assert(
-    nexusminer::prime::kMaxSerializedPrimeOffsets ==
-        nexusminer::protocol::FalconConstants::PRIME_VOFFSETS_MAX_SIZE,
-    "PRIME_VOFFSETS_MAX_SIZE in falcon_constants.hpp must equal "
-    "kMaxSerializedPrimeOffsets in prime_validation.hpp — bumping one "
-    "without the other will silently corrupt the wire format");
+// Cross-check between protocol/falcon_constants.hpp::PRIME_VOFFSETS_MAX_SIZE
+// and prime/kMaxSerializedPrimeOffsets used to live here as a test-TU
+// static_assert.  After the layout-constants consolidation, both names are
+// derived from the same definition in protocol/protocol_constants.hpp, so
+// the assertion is tautological and has been removed.
 
 using boost_uint1024_t = boost::multiprecision::uint1024_t;
 

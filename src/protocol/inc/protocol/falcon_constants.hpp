@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "mining/mining_constants.hpp"
+#include "protocol/protocol_constants.hpp"
+
 namespace nexusminer {
 namespace protocol {
 
@@ -208,10 +211,10 @@ namespace FalconConstants {
      *  Hash-channel submissions carry no vOffsets (empty vector — zero overhead).
      *
      *  Single source of truth lives in
-     *  src/cpu/inc/cpu/prime_validation.hpp::kMaxSerializedPrimeOffsets;
-     *  the constant here is duplicated to keep this header free of an
-     *  upward dependency on the cpu/ tree. */
-    constexpr size_t PRIME_VOFFSETS_MAX_SIZE = 22;
+     *  mining/mining_constants.hpp::mining::kMaxSerializedPrimeOffsets.
+     *  This alias keeps the wire-format constant addressable inside the
+     *  FalconConstants namespace without re-declaring the magic number. */
+    constexpr size_t PRIME_VOFFSETS_MAX_SIZE = mining::kMaxSerializedPrimeOffsets;
 
     /** Deprecated alias retained for backward-compatibility with callers that
      *  still spell the old fixed-length name.  New code should use

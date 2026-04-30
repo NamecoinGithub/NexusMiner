@@ -11,44 +11,36 @@ namespace nexusminer {
 namespace prime {
 
 //==============================================================================
-// Serialized vOffsets layout (single source of truth for miner + tests)
+// Serialized vOffsets layout
 //==============================================================================
 //
-// `GetOffsetsImpl` emits, for a Cunningham chain of length N (N >= 2):
+// The canonical layout constants live in
+// mining/mining_constants.hpp::mining so that both the
+// protocol-side wire-format upper bounds (PRIME_VOFFSETS_MAX_SIZE in
+// falcon_constants.hpp) and the miner-side sanity gate
+// (is_well_formed_prime_offsets() below) are driven by ONE definition.  The
+// inline aliases here preserve the historical `nexusminer::prime::kXxx`
+// spellings used by all current call sites.
 //
-//   (N - 1) gap bytes, each in {2, 4, 6, 8, 10, 12}
-//   followed by 4 bytes of fractional difficulty (uint32_t, little-endian)
-//
-// Therefore a well-formed serialized offsets vector has size:
-//
-//   size == (N - 1) + kPrimeOffsetFractionBytes
-//
-// Historical bug: the miner used to hard-code `size == 10` (chain length 7),
-// silently dropping every length-8+ find as "malformed".  The check is now
-// a range gate driven by these constants.
-//
-// Bounds rationale:
-//   * kMinSerializedPrimeOffsets = 5  -> chain length 2 (smallest meaningful
-//     Cunningham cluster) + 4 fraction bytes.
-//   * kMaxSerializedPrimeOffsets = 22 -> chain length 19 + 4 fraction bytes.
-//     Cunningham chain world record is currently 17 primes; 19 gives
-//     headroom for future records without ever dropping a real find.
+// See mining/mining_constants.hpp for the full layout description and the
+// MIN_CHAIN_LENGTH cross-check static_asserts (kept there so they fire on
+// every build, including WITH_PRIME=OFF).
 
 /** Fractional-difficulty tail size appended by GetOffsetsImpl (uint32_t LE). */
-inline constexpr std::size_t kPrimeOffsetFractionBytes = 4;
+inline constexpr std::size_t kPrimeOffsetFractionBytes =
+    mining::kPrimeOffsetFractionBytes;
 
 /** Minimum well-formed serialized vOffsets size (chain length 2). */
 inline constexpr std::size_t kMinSerializedPrimeOffsets =
-    /*chain length 2 -> 1 gap*/ 1 + kPrimeOffsetFractionBytes;  // 5
+    mining::kMinSerializedPrimeOffsets;
 
-/** Maximum supported chain length recognised by the miner.
- *  Set generously above the Cunningham world record (17) so a record-breaking
- *  find is never silently dropped by the miner-side sanity gate. */
-inline constexpr std::size_t kMaxRecognisedChainLength = 19;
+/** Maximum supported chain length recognised by the miner. */
+inline constexpr std::size_t kMaxRecognisedChainLength =
+    mining::kMaxRecognisedChainLength;
 
-/** Maximum well-formed serialized vOffsets size (chain length kMax... above). */
+/** Maximum well-formed serialized vOffsets size (chain length kMaxRecognisedChainLength). */
 inline constexpr std::size_t kMaxSerializedPrimeOffsets =
-    (kMaxRecognisedChainLength - 1) + kPrimeOffsetFractionBytes;  // 22
+    mining::kMaxSerializedPrimeOffsets;
 
 /** Returns true if `offsets` could plausibly have been produced by
  *  GetOffsetsImpl for some valid chain length in [2, kMaxRecognisedChainLength].
@@ -60,18 +52,6 @@ inline bool is_well_formed_prime_offsets(const std::vector<uint8_t>& offsets)
     return offsets.size() >= kMinSerializedPrimeOffsets &&
            offsets.size() <= kMaxSerializedPrimeOffsets;
 }
-
-// Compile-time guarantee: any chain at the configured minimum target length
-// must serialize to a size the sanity gate accepts.  This catches any future
-// drift where mining::MIN_CHAIN_LENGTH is bumped past kMaxRecognisedChainLength
-// without also bumping the protocol-side max constants.
-static_assert(
-    static_cast<std::size_t>(mining::MIN_CHAIN_LENGTH) <= kMaxRecognisedChainLength,
-    "mining::MIN_CHAIN_LENGTH exceeds kMaxRecognisedChainLength — bump "
-    "kMaxRecognisedChainLength (and PRIME_VOFFSETS_MAX_SIZE in falcon_constants.hpp)");
-static_assert(
-    static_cast<std::size_t>(mining::MIN_CHAIN_LENGTH) >= 2,
-    "mining::MIN_CHAIN_LENGTH must be >= 2 (single-prime chains are meaningless)");
 
 /** Miller_Rabin
  *
