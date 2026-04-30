@@ -444,12 +444,17 @@ namespace nexusminer {
 
         void Sieve::reset_stats()
         {
-            m_chain_histogram = std::vector<std::uint32_t>(10, 0);
+            // Sized to 12 buckets (was 10) so chain lengths 10-11 are
+            // observable in operator stats — these are reachable post-#675
+            // (variable-length vOffsets up to chain length 19) but the prior
+            // size-10 vector silently saturated everything >= 9 into bucket 9.
+            // Kept at 12 (not the full 19) to bound per-Sieve memory.
+            m_chain_histogram = std::vector<std::uint32_t>(12, 0);
             // Stone 6.9 — same fixed size as m_chain_histogram so engine fan-in
             // can iterate buckets in lockstep without an additional bounds
             // dance.  Sized exactly once here (calling contract for
             // snapshot_chain_histogram_attempted, see chain_sieve.hpp).
-            m_chain_histogram_attempted = std::vector<std::uint32_t>(10, 0);
+            m_chain_histogram_attempted = std::vector<std::uint32_t>(12, 0);
             m_fermat_test_count = 0;
             m_fermat_prime_count = 0;
             m_chain_count = 0;
@@ -552,13 +557,15 @@ namespace nexusminer {
 
         void Sieve::close_chain()
         {
-            // Stone 6.9.1 — gate on slot_filter_min() (= target_length + kSlotFilterSlack)
-            // rather than target_length itself.  Pre-Stone-6.9 the hard-coded 8 was
-            // implicitly providing slack=1 when the network difficulty implied target=7;
-            // dropping that slack in #672 caused chains_found_by_sieve to balloon ~10x
-            // and burned ~25-29% of CPU throughput in Fermat thrash on candidates that
-            // could never produce a length-target Fermat run.  See the funnel line in
-            // the PR body for the diagnostic numbers.
+            // Stone 6.9.1 / Option 3 — gate on slot_filter_min() (= target_length
+            // + slot_filter_slack(target_length)) rather than target_length itself.
+            // Pre-Stone-6.9 the hard-coded 8 was implicitly providing slack=1 when
+            // the network difficulty implied target=7; dropping that slack in #672
+            // caused chains_found_by_sieve to balloon ~10x and burned ~25-29% of
+            // CPU throughput in Fermat thrash on candidates that could never produce
+            // a length-target Fermat run.  Option 3 makes the slack target-aware so
+            // a difficulty step from 7 → 8 → 9 doesn't silently re-introduce the
+            // same regression at the next wall.
             if (m_current_chain.length() >= slot_filter_min())
             {
                 //we found a chain candidate.  save it.

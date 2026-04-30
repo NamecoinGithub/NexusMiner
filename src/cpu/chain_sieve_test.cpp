@@ -270,12 +270,12 @@ void test_slot_filter_slack_invariant()
 {
     nexusminer::cpu::Sieve s;
     s.set_target_length(7);
-    print_result("slot_filter_min() == target + kSlotFilterSlack at target=7",
-                 s.slot_filter_min() == 7 + nexusminer::cpu::Sieve::kSlotFilterSlack);
+    print_result("slot_filter_min() == target + slot_filter_slack(target) at target=7",
+                 s.slot_filter_min() == 7 + nexusminer::cpu::Sieve::slot_filter_slack(7));
 
     s.set_target_length(8);
-    print_result("slot_filter_min() == target + kSlotFilterSlack at target=8",
-                 s.slot_filter_min() == 8 + nexusminer::cpu::Sieve::kSlotFilterSlack);
+    print_result("slot_filter_min() == target + slot_filter_slack(target) at target=8",
+                 s.slot_filter_min() == 8 + nexusminer::cpu::Sieve::slot_filter_slack(8));
 
     // Degenerate clamp: target=2 is the sieve floor; slot filter must
     // remain >= 2 + slack and must NEVER drop below 2 even if slack
@@ -284,10 +284,18 @@ void test_slot_filter_slack_invariant()
     print_result("slot_filter_min() >= 2 even at minimum target",
                  s.slot_filter_min() >= 2);
 
-    // Pin the constant value itself so any change is forced through code
-    // review with this test failing.
-    print_result("kSlotFilterSlack pinned to 1",
-                 nexusminer::cpu::Sieve::kSlotFilterSlack == 1);
+    // Option 3 — pin the per-target formula values so any change is
+    // forced through code review with this test failing.  Slack scales as
+    // max(1, target - 6) so the sieve-survivor headroom keeps pace with
+    // the Fermat-pass probability decay (~1 / log(2^1024) per slot).
+    print_result("slot_filter_slack(7) == 1 (preserves pre-#672 baseline)",
+                 nexusminer::cpu::Sieve::slot_filter_slack(7) == 1);
+    print_result("slot_filter_slack(8) == 2",
+                 nexusminer::cpu::Sieve::slot_filter_slack(8) == 2);
+    print_result("slot_filter_slack(9) == 3",
+                 nexusminer::cpu::Sieve::slot_filter_slack(9) == 3);
+    print_result("slot_filter_slack(2) clamped to 1",
+                 nexusminer::cpu::Sieve::slot_filter_slack(2) == 1);
 }
 } // namespace
 

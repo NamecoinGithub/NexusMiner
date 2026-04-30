@@ -14,7 +14,11 @@ namespace nexusminer {
 namespace stats
 {
 
-inline constexpr std::size_t kPrimeHistogramBuckets = 11;
+// Bucket k (0..kPrimeHistogramBuckets-1) holds the count of chains whose
+// best Fermat run had length k.  Sized to 12 so post-#675 chain lengths
+// 10-11 are observable; bumped from 11 in lockstep with the CPU Sieve's
+// m_chain_histogram size (see chain_sieve.cpp reset_stats).
+inline constexpr std::size_t kPrimeHistogramBuckets = 12;
 using Prime_histogram = std::array<std::uint32_t, kPrimeHistogramBuckets>;
 
 // Snapshot of per-worker sieve diagnostic counters. Published from the worker

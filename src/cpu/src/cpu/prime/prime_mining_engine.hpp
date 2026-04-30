@@ -414,7 +414,30 @@ private:
     // pool thread has already cleared its slot).  std::atomic is neither
     // copy- nor move-constructible, so we hold the slots in a heap array via
     // unique_ptr rather than std::vector.
+    //
+    // Option 2 — kept ONLY for liveness diagnostics (pool_threads_running);
+    // histogram fan-in no longer reads through this pointer.  See
+    // m_pool_histogram_snapshots below.
     std::unique_ptr<std::atomic<Sieve*>[]> m_pool_sieves;
+
+    // Option 2 (Sieve histogram concurrency) — per-pool-thread published
+    // snapshot of the Sieve's chain-length histograms.  Pool threads call
+    // publish_histogram_snapshot() at chunk boundaries from the OWNING
+    // thread; the stats path reads only these snapshots and never touches
+    // the live Sieve*.  Restores the documented invariant in
+    // prime_stats_snapshot.hpp that diagnostic counters are published from
+    // the owning thread.
+    //
+    // Holds (best, attempted) pairs as a single shared_ptr swap so the two
+    // arrays are observed atomically (a half-updated pair would skew the
+    // operator-facing "survival probability" view).
+    struct Pool_histogram_snapshot
+    {
+        stats::Prime_histogram best{};
+        stats::Prime_histogram attempted{};
+    };
+    std::unique_ptr<stats::Atomic_snapshot<Pool_histogram_snapshot>[]>
+        m_pool_histogram_snapshots;
 
     // Stone 6.5 — periodic engine-stats info-level log line (every 30s).
     void                                   run_stats_logger();
