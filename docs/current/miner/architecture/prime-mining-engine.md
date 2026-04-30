@@ -325,13 +325,13 @@ guaranteed by `Shared_segment_allocator::next_segment_chunk()`).
        │     continue
        │
        │   my_epoch = session->epoch_id
-       │   my_base  = session->base_hash      ← discriminator (NOT epoch_id)
+       │   my_base  = session->base_hash      ← rebind discriminator (sieve)
        │
-       │   if (!bound || my_base != bound_base_hash):
+       │   if (!bound || my_base != bound_session->base_hash):
        │     local_sieve_start = sieve.prepare(my_base + session->starting_nonce)
        │     local_nonce       = local_sieve_start - my_base
-       │     bound_base_hash   = my_base
        │     bound = true
+       │   bound_session = session              ← always recapture (Option 1)
        │
        │   ── Stone 6.5: draw a CHUNK of contiguous segments ──
        │   chunk_base = m_segment_allocator.next_segment_chunk(pool_chunk_segments)
@@ -347,19 +347,28 @@ guaranteed by `Shared_segment_allocator::next_segment_chunk()`).
        │     sieve.test_chains(local_sieve_start)
        │     chain_offsets = sieve.m_long_chain_starts
        │
-       │     ── REQUIRED post-segment re-check (per SEGMENT, not per chunk) ──
+       │     ── REQUIRED post-segment re-check (Option 1, per SEGMENT) ──
        │     fresh = current_session()
-       │     if (!fresh || fresh->base_hash != bound_base_hash || fresh->is_consumed()):
+       │     tip_advanced =
+       │         fresh && bound_session &&
+       │         (fresh->block_data.previous_hash !=
+       │          bound_session->block_data.previous_hash ||
+       │          fresh->block_data.nHeight !=
+       │          bound_session->block_data.nHeight)
+       │     if (!fresh || tip_advanced ||
+       │         bound_session->is_consumed() || fresh->is_consumed()):
        │       ++m_segments_discarded_epoch_changed
        │       bound = false; abandon rest of chunk; break
        │
+       │     ── Dispatch references bound_session, NOT fresh (Option 1) ──
        │     for each x in chain_offsets:
        │       candidate.nNonce = local_nonce + x
-       │       if ValidatePrimeCandidate(base+nNonce, nbits/1e7, offsets, diff):
-       │         fresh.mark_consumed()                ← single-found-block-wins
+       │       if ValidatePrimeCandidate(bound_session->base_hash + nNonce,
+       │                                 nbits/1e7, offsets, diff):
+       │         bound_session.mark_consumed()        ← single-found-block-wins
        │         ++m_candidates_dispatched
        │         asio::post(io_context,
-       │           [session_for_dispatch, block_copy, captured_offsets] {
+       │           [session_for_dispatch=bound_session, block_copy, captured_offsets] {
        │             on_found(session->internal_id_for_solution, std::move(bd))
        │           })
        │         break                                ← session is spent

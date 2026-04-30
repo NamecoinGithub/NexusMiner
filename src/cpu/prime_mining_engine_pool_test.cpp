@@ -379,6 +379,81 @@ void test_same_base_republish_preserves_work()
                  engine.segments_discarded_epoch_changed() == discards_before);
 }
 
+// Option 1 — Merkle-rotation republish: a KEEPALIVE-style update that
+// rotates hashMerkleRoot (so prime base_hash changes) at the SAME chain tip
+// (same hashPrevBlock + same nHeight) must NOT cause the pool-thread
+// post-segment re-check to discard the in-flight chunk.  The publish-layer
+// short-circuit (PR #674) preserves the cooperative cursor on this case;
+// before Option 1 the pool thread STILL discarded because its discriminator
+// was base_hash.  With Option 1 the discriminator is the stable
+// (previous_hash, nHeight) pair so the chunk completes and dispatch uses
+// the bound session's block_data (the OLD merkle root the candidate was
+// sieved against — which is the cryptographically correct thing to do).
+void test_merkle_rotation_republish_preserves_chunk()
+{
+    Test_io_context io;
+    // Use simulated_segment_latency to widen the race window between
+    // segment draw and the post-segment re-check, so the regression
+    // (without Option 1) would deterministically surface as a discard.
+    auto feed = std::make_shared<WorkerTemplateFeed>();
+    PrimeMiningEngine engine{
+        make_cfg(/*pool_threads=*/4, io.ctx, /*force_candidate=*/false,
+                 /*simulated_latency=*/std::chrono::milliseconds{2}),
+        feed};
+
+    // Initial template at height=42 with base hash A.
+    boost::multiprecision::uint1024_t base_a{"0xa11ce"};
+    feed->publish(make_epoch(make_work_package(0x1c00ffffu, base_a, 42)));
+    auto p1 = engine.wait_for_sessions_published_after(0, 2s);
+    wait_until(500ms, [&] { return engine.segments_processed() >= 8; });
+
+    const auto discards_before = engine.segments_discarded_epoch_changed();
+
+    // Republish 30 times with DIFFERENT base hashes but the SAME height
+    // (and zero previous_hash on both — make_work_package only sets the
+    // base_hash override and height).  Each republish simulates a Merkle
+    // rotation: prime base_hash changes, chain tip does not.
+    constexpr int kRotations = 30;
+    auto last_seen = p1;
+    for (int i = 0; i < kRotations; ++i)
+    {
+        boost::multiprecision::uint1024_t merkle_rotated{0xb00b00 + i};
+        feed->publish(make_epoch(make_work_package(0x1c00ffffu, merkle_rotated, 42)));
+        last_seen = engine.wait_for_sessions_published_after(last_seen, 1s);
+        std::this_thread::sleep_for(2ms);
+    }
+
+    // Drain a few more segments so any pending discard would surface.
+    const auto baseline_segments = engine.segments_processed();
+    wait_until(1s, [&] {
+        return engine.segments_processed() >= baseline_segments + 16;
+    });
+
+    // The publish layer's same-base short-circuit MUST fire for every
+    // Merkle rotation (height + previous_hash unchanged).  Before PR #674
+    // this was already true at the publish layer.
+    print_result(
+        "Merkle rotation: same_base_short_circuits == kRotations",
+        engine.same_base_short_circuits() == static_cast<std::uint64_t>(kRotations));
+
+    // The KEY Option 1 invariant: even with 30 base_hash rotations and
+    // a 2ms simulated latency widening the race window per segment, the
+    // pool-thread post-segment discard counter must NOT advance, because
+    // the stable (previous_hash, nHeight) discriminator says "same tip".
+    print_result(
+        "Merkle rotation: pool threads do NOT discard in-flight chunks "
+        "(Option 1 — bound-session post-segment discriminator)",
+        engine.segments_discarded_epoch_changed() == discards_before);
+
+    // Sanity: pool threads kept running and made forward progress — the
+    // republishes did not deadlock or stall the cooperative cursor.
+    print_result(
+        "Merkle rotation: segments_processed advanced after rotations",
+        engine.segments_processed() > baseline_segments);
+    print_result("Merkle rotation: no pool-thread crashes",
+                 engine.pool_threads_crashed() == 0);
+}
+
 void test_session_only_mode_null_io_context()
 {
     // With a null io_context the engine runs in session-only mode: the
@@ -574,6 +649,7 @@ int main()
     test_skipped_consumed_advances();
     test_destruction_during_heavy_churn();
     test_same_base_republish_preserves_work();
+    test_merkle_rotation_republish_preserves_chunk();
     test_session_only_mode_null_io_context();
     test_invalid_chunk_size_rejected();
     test_chunk_amortizes_starting_multiples_calls();
