@@ -14,6 +14,11 @@ target_include_directories(cpu
         # remain implementation-private; the engine just happens to need
         # public visibility for the integration in Stone 7.
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+        # prime_validation.hpp (PUBLIC) re-exports the canonical vOffsets
+        # layout constants from protocol/protocol_constants.hpp, so consumers
+        # of cpu's public interface need the protocol include path.  This is
+        # header-only — no link dependency on the protocol target is needed.
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/protocol/inc>
 )
 
 # TODO reduce dependencies
