@@ -6,7 +6,6 @@
 #include <cstddef>
 #include "LLC/types/uint1024.h"
 #include "mining/mining_constants.hpp"
-#include "protocol/protocol_constants.hpp"
 
 namespace nexusminer {
 namespace prime {
@@ -16,32 +15,32 @@ namespace prime {
 //==============================================================================
 //
 // The canonical layout constants live in
-// protocol/protocol_constants.hpp::ProtocolConstants so that both the
+// mining/mining_constants.hpp::mining so that both the
 // protocol-side wire-format upper bounds (PRIME_VOFFSETS_MAX_SIZE in
 // falcon_constants.hpp) and the miner-side sanity gate
 // (is_well_formed_prime_offsets() below) are driven by ONE definition.  The
 // inline aliases here preserve the historical `nexusminer::prime::kXxx`
 // spellings used by all current call sites.
 //
-// See protocol/protocol_constants.hpp for the full layout description and the
-// mining::MIN_CHAIN_LENGTH cross-check static_asserts (kept there so they
-// fire on every build, including WITH_PRIME=OFF).
+// See mining/mining_constants.hpp for the full layout description and the
+// MIN_CHAIN_LENGTH cross-check static_asserts (kept there so they fire on
+// every build, including WITH_PRIME=OFF).
 
 /** Fractional-difficulty tail size appended by GetOffsetsImpl (uint32_t LE). */
 inline constexpr std::size_t kPrimeOffsetFractionBytes =
-    protocol::ProtocolConstants::kPrimeOffsetFractionBytes;
+    mining::kPrimeOffsetFractionBytes;
 
 /** Minimum well-formed serialized vOffsets size (chain length 2). */
 inline constexpr std::size_t kMinSerializedPrimeOffsets =
-    protocol::ProtocolConstants::kMinSerializedPrimeOffsets;
+    mining::kMinSerializedPrimeOffsets;
 
 /** Maximum supported chain length recognised by the miner. */
 inline constexpr std::size_t kMaxRecognisedChainLength =
-    protocol::ProtocolConstants::kMaxRecognisedChainLength;
+    mining::kMaxRecognisedChainLength;
 
 /** Maximum well-formed serialized vOffsets size (chain length kMaxRecognisedChainLength). */
 inline constexpr std::size_t kMaxSerializedPrimeOffsets =
-    protocol::ProtocolConstants::kMaxSerializedPrimeOffsets;
+    mining::kMaxSerializedPrimeOffsets;
 
 /** Returns true if `offsets` could plausibly have been produced by
  *  GetOffsetsImpl for some valid chain length in [2, kMaxRecognisedChainLength].
