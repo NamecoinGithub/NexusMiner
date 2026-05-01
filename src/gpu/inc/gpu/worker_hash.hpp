@@ -60,7 +60,12 @@ private:
     Block_data m_block;
     std::uint32_t m_pool_nbits;
     uint1024_t m_target;
-    std::uint64_t m_hashes = 0;
+    // PR #681 follow-up §4(4): worker thread writes (Worker_hash::run, after
+    // every kernel call), stats thread reads + resets (update_statistics).
+    // Plain uint64_t was a TSan-flaggable data race; relaxed atomic is enough
+    // because the stats path only needs eventual visibility — no ordering
+    // requirement against any other memory operation.
+    std::atomic<std::uint64_t> m_hashes{0};
     std::uint32_t m_intensity;
     std::uint32_t m_throughput;
     std::uint32_t m_threads_per_block;
@@ -82,6 +87,14 @@ private:
     // mismatches as a hardware fault (matching ccminer/T-Rex patterns).
     // After kKeccakMismatchFaultThreshold consecutive mismatches in a session
     // we set m_running=false; a healthy submission resets the counter.
+    //
+    // PR #681 follow-up §5: 3 is conservative compared to ccminer/T-Rex (5
+    // for stale shares).  We pick 3 because a Nexus block winner is much
+    // higher value than a pool share — the false-positive cost (taking a
+    // healthy worker offline for 3 windows of mismatch noise) is a small
+    // fraction of the false-negative cost (feeding the pool a winner the
+    // host can't revalidate).  Do NOT tune this up without re-evaluating
+    // that asymmetry.
     static constexpr std::uint32_t kKeccakMismatchFaultThreshold = 3;
     std::atomic<std::uint32_t> m_keccak_mismatch_count{0};
     std::atomic<std::uint32_t> m_keccak_mismatch_total{0};

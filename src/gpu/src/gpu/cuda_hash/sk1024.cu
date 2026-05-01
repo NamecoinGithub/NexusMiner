@@ -823,7 +823,15 @@ extern bool cuda_sk1024_hash(
 
 	uint64_t doneNonce = ((uint64_t*)TheData)[26];
 
-	if (doneNonce < 18446744072149270489lu)
+	// PR #681 follow-up §4(3): replace the magic constant
+	// 18446744072149270489lu (= 2^64 - throughput - 1 for the throughput the
+	// kernel was originally tested with) with an explicit unsigned-overflow
+	// check.  With per-worker nonce sharding (Worker_hash bug #7 fix, gpu
+	// worker_hash.cpp:135) each worker only owns 2^48 of nonce space so this
+	// branch is essentially unreachable in production, but the magic constant
+	// was a footgun for any callsite that bumps `throughput` past the value
+	// it was hand-tuned for.  Overflow check is correct for any throughput.
+	if (doneNonce >= first_nonce)
 		*hashes_done = doneNonce - first_nonce + 1;
 
 	return false;

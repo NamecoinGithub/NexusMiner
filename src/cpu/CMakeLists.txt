@@ -27,6 +27,18 @@ add_nexusminer_test(
                  ${CMAKE_SOURCE_DIR}/src/config/inc
 )
 
+# PR #681 follow-up §2 — host-only regression test for the cuda_sk1024_hash
+# kernel contract and the Worker_hash inner-loop semantics (local_nonce
+# inflation, per-worker nonce sharding, keccak-mismatch fault counter).
+# Pure C++; no CUDA / GPU library dependency, so it runs in every host CI
+# regardless of WITH_GPU_CUDA / WITH_PRIME.  Lives in src/cpu/ alongside the
+# other unconditional host tests so the default `debug` and `release`
+# presets pick it up.  See file-level comment for what each case asserts.
+add_nexusminer_test(
+    NAME        gpu_hash_kernel_contract_test
+    SOURCES     gpu_hash_kernel_contract_test.cpp
+)
+
 if(WITH_PRIME)
     target_link_libraries(cpu libprimesieve-static)
     if(WIN32)

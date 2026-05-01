@@ -10,12 +10,27 @@
 #include "LLC/types/uint1024.h"
 #include "LLC/types/bignum.h"
 #include "TAO/Ledger/difficulty.h"
+#include <cstddef>
 #include <stdexcept>
 
 namespace nexusminer
 {
 namespace gpu
 {
+
+// PR #681 follow-up §5: the cuda_sk1024_hash kernel reads the start nonce as
+// `((uint64_t*)TheData)[26]` (sk1024.cu:776, 822) where TheData is the byte
+// pointer to Block_data::nVersion.  The aliasing trick is undocumented and
+// fragile against any reordering of Block_data fields — lock the layout
+// assumption in here so a future "harmless" refactor breaks the build instead
+// of silently corrupting hash-rate statistics.  Block_data is not strictly
+// standard-layout (it has user-provided constructors), but offsetof on a
+// trivially-destructible aggregate-ish type is universally supported by the
+// compilers we ship for and is the cleanest way to express the contract.
+static_assert(offsetof(Block_data, nNonce) == 26 * sizeof(std::uint64_t),
+    "cuda_sk1024_hash assumes Block_data::nNonce lives at "
+    "((uint64_t*)&Block_data::nVersion)[26]; do not reorder Block_data "
+    "fields without updating sk1024.cu's TheData[26] uses.");
 
 std::uint32_t Worker_hash::device_id() const
 {
@@ -165,7 +180,7 @@ void Worker_hash::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Bloc
         // m_stop = true interrupts the current while(!m_stop) loop iteration immediately,
         // matching the pattern used in the prime workers (PR #343).
         // Reset m_hashes to prevent INF MH/s on the first stats interval after recovery.
-        m_hashes = 0;
+        m_hashes.store(0, std::memory_order_relaxed);
         // Stone — bug #8 fix: reset the consecutive-mismatch counter on every
         // new work, so a healthy session re-arms the fault threshold.  The
         // total counter (m_keccak_mismatch_total) is intentionally NOT reset
@@ -230,7 +245,7 @@ void Worker_hash::set_block(std::shared_ptr<WorkPackage> work_package, Worker::B
         cuda_sk1024_set_Target((uint64_t*)m_target.begin());
 
         // Signal new work is available.
-        m_hashes = 0;
+        m_hashes.store(0, std::memory_order_relaxed);
         // Stone — bug #8 fix (see set_block(CBlock,...) above for rationale).
         m_keccak_mismatch_count.store(0, std::memory_order_relaxed);
         m_stop = true;
@@ -282,18 +297,41 @@ void Worker_hash::run()
         // race pattern we already fixed on the prime side.  Mirrors
         // worker_prime.cpp:195-208 (Block_data local_block; uint1k local_base_hash;
         // uint64_t local_nonce; under scoped_lock).
+        //
+        // PR #681 follow-up — Variant B of §3 of the plan.  We deliberately do
+        // NOT keep `local_nonce` as a separate variable from local_block.nNonce.
+        // cuda_sk1024_hash's contract (sk1024.cu:758-829, sk1024.h:21-38) is
+        // that `TheNonce` must alias `((uint64_t*)TheData)[26]`: the kernel
+        // advances the nonce by mutating TheData[26] on the non-winner path
+        // and computes hashes_done as `doneNonce - first_nonce + 1` where
+        // `first_nonce = TheNonce` snapshotted at entry.  If TheNonce and
+        // TheData[26] drift apart between iterations, hashes_done is reported
+        // against a stale baseline and grows quadratically (`K(K+1)/2 · T`
+        // instead of `K · T`) — the "INF MH/s" failure mode that PR #343 was
+        // originally written to prevent.  Pre-PR #681 the kernel was called
+        // with m_block.nNonce by-reference, which preserved that aliasing.
+        // PR #681's snapshot block introduced a separate `local_nonce` that
+        // only updated on a winner, breaking the invariant.  We restore the
+        // invariant by passing local_block.nNonce by-reference (see the
+        // cuda_sk1024_hash call below) so there is exactly one piece of state
+        // for "the current nonce" and it lives in exactly one place.  The
+        // kernel-layout coupling is locked in by the static_assert at the top
+        // of this function (offsetof nNonce == 26 * sizeof(uint64_t)).
+        // device_id() does a std::get on a std::variant — hoist out of the
+        // hot loop (§4(2) of the plan); the configured device cannot change
+        // mid-session.
         Block_data local_block;
         uint1024_t local_target;
-        std::uint64_t local_nonce;
         std::uint32_t local_throughput;
         std::uint32_t local_threads_per_block;
+        std::uint32_t local_device_id;
         {
             std::scoped_lock<std::mutex> lck(m_mtx);
             local_block = m_block;
             local_target = m_target;
-            local_nonce = m_block.nNonce;
             local_throughput = m_throughput;
             local_threads_per_block = m_threads_per_block;
+            local_device_id = device_id();
         }
 
         while (!m_stop)
@@ -315,19 +353,23 @@ void Worker_hash::run()
             std::uint32_t keccak_mismatch_delta = 0;
 
             // Do hashing on a CUDA device.  All inputs are local snapshots so
-            // a concurrent set_block() cannot tear them mid-kernel.
+            // a concurrent set_block() cannot tear them mid-kernel.  We pass
+            // local_block.nNonce by-reference (see snapshot-block comment
+            // above for the kernel-contract rationale) so the kernel's
+            // "advance TheData[26], leave TheNonce alone on miss" semantics
+            // remain coherent across iterations.
             bool found = cuda_sk1024_hash(
-                device_id(),
+                local_device_id,
                 reinterpret_cast<uint32_t*>(&local_block.nVersion),
                 local_target,
-                local_nonce,
+                local_block.nNonce,
                 &hashes,
                 local_throughput,
                 local_threads_per_block,
                 local_block.nHeight,
                 &keccak_mismatch_delta);
 
-            m_hashes += hashes;
+            m_hashes.fetch_add(hashes, std::memory_order_relaxed);
 
             // Stone — bug #8 fix: handle keccak mismatches.  These represent
             // a GPU that returned a "winner" the host could not revalidate —
@@ -371,11 +413,13 @@ void Worker_hash::run()
                 // Copy the winning nonce back into the canonical m_block so
                 // the dispatch callback (and any future stats reader) sees a
                 // coherent block.  Lock-protected because publish_statistics
-                // / set_block may also touch m_block.
+                // / set_block may also touch m_block.  PR #681 follow-up:
+                // local_block.nNonce already holds the winning nonce because
+                // cuda_sk1024_hash sets `TheNonce = foundNonce` (sk1024.cu:796)
+                // and TheNonce now aliases local_block.nNonce.
                 {
                     std::scoped_lock<std::mutex> lck(m_mtx);
-                    m_block.nNonce = local_nonce;
-                    local_block.nNonce = local_nonce;
+                    m_block.nNonce = local_block.nNonce;
                 }
                 // Calculate the number of leading zero-bits (use the local
                 // snapshot — local_block already has the correct nVersion etc).
@@ -412,12 +456,14 @@ void Worker_hash::run()
 void Worker_hash::update_statistics(stats::Collector& stats_collector)
 {
     auto hash_stats = std::get<stats::Hash>(stats_collector.get_worker_stats(m_config.m_internal_id));
-    hash_stats.m_hash_count += m_hashes;
+    // PR #681 follow-up §4(4): exchange-with-zero so the publish + reset is
+    // atomic from the writer's POV — no chance of double-counting hashes
+    // posted between the read and the reset.
+    hash_stats.m_hash_count += m_hashes.exchange(0, std::memory_order_relaxed);
     hash_stats.m_best_leading_zeros = m_best_leading_zeros;
     hash_stats.m_met_difficulty_count = m_met_difficulty_count;
 
     stats_collector.update_worker_stats(m_config.m_internal_id, hash_stats);
-    m_hashes = 0;
 }
 
 }
