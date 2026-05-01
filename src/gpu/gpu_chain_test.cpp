@@ -18,6 +18,14 @@
 // it runs in any host-only CI without a GPU toolchain.  The test deliberately
 // does NOT exercise any kernel or device-side code; that is covered by the
 // existing on-device validation runs.
+//
+// Note re. close_chain_min slack: as of the PR #678 follow-up that landed on
+// main, mining/prime_thresholds.hpp::close_chain_min(T) returns T+1 (an
+// empirical quality gate), while popcount_window_floor(T) stays at the
+// strict lower bound T.  These tests exercise the host-side gpu::Chain
+// hope/walk logic, which keys off the per-instance m_min_chain_length
+// (== T) — not the close_chain_min slack — so the +1 does not affect
+// what is asserted here.
 
 #include "gpu/prime/chain.hpp"
 
