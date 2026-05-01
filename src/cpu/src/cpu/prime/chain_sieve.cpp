@@ -636,6 +636,17 @@ namespace nexusminer {
             // honour the same threshold close_chain() used to keep this
             // candidate.  Default-constructed Chain has m_min_chain_length=8.
             m_current_chain.m_min_chain_length = m_target_chain_length;
+            // PR #681 follow-up — note re §4(1) of the plan: deliberately do
+            // NOT propagate m_target_chain_length into m_min_chain_report_length
+            // here.  The CPU side intentionally keeps the report-length floor
+            // at the Chain default of 5 so length-5/6 chains reach
+            // ValidatePrimeCandidate and are counted in the funnel
+            // (rejected_below_diff) for diagnostic visibility — see the
+            // comment at test_chains/clean_chains' push_gate computation
+            // (~line 688-700) and the stored "prime sieve" memory.  The GPU
+            // side (cuda_chain.cu:46-55) writes both fields equal because it
+            // doesn't have the same diagnostic surface; that divergence is
+            // intentional and not a footgun.
             m_chain_in_process = true;
         }
 
