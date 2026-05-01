@@ -360,6 +360,24 @@ void test_popcount_and_close_chain_thresholds()
                  s.popcount_window_floor() == popcount_window_floor(9));
     print_result("Sieve::close_chain_min() == helper at T=9",
                  s.close_chain_min() == close_chain_min(9));
+
+    // ── Stone — popcount_window_supported_max() SSOT (added for GPU
+    // find_chain.cu's per-session target_length plumbing).  The kernel-1
+    // 4-byte popcount window can host at most a length-9 chain; above that
+    // the necessary-condition reasoning fails and the kernel must SKIP the
+    // popcount early-exit (otherwise it would discard windows that could
+    // produce a winner).  CPU's analogous popcount filter has no such
+    // ceiling because it operates on a wider window — but both CPU and GPU
+    // share the SAME prime_thresholds.hpp, so we lock in the constant here
+    // to make any accidental change show up as a CPU test failure too.
+    using nexusminer::mining::popcount_window_supported_max;
+    print_result("popcount_window_supported_max() == 9 (kernel-1 ceiling)",
+                 popcount_window_supported_max() == 9);
+    // The value must always be >= 2 (the minimum target_length clamp);
+    // otherwise the helper would be self-contradictory.
+    print_result("popcount_window_supported_max() >= kMinTargetChainLength",
+                 popcount_window_supported_max()
+                     >= nexusminer::mining::kMinTargetChainLength);
 }
 
 // Stone 6.9.2 — behavioral regression for find_chains popcount stage.

@@ -78,4 +78,26 @@ endif()
 #endif()
 
 
+# Stone — host-runnable GPU unit tests.
+# These tests exercise the host-only portions of the GPU code (currently
+# `src/gpu/src/gpu/prime/chain.cpp` — the host-side Chain class used by the
+# CPU-fallback batch test path and by the get_chains/get_long_chains
+# converters).  They are NOT gated on WITH_GPU_CUDA because the files under
+# test compile cleanly without any CUDA toolchain — chain.hpp only includes
+# `prime_common.hpp` plus standard headers.
+#
+# Gated on WITH_PRIME because the GPU-prime stack (and therefore chain.hpp)
+# is meaningful only in prime builds.
+if(WITH_PRIME)
+    add_executable(gpu_chain_test
+        gpu_chain_test.cpp
+        src/gpu/prime/chain.cpp)
+    target_include_directories(gpu_chain_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME gpu_chain_test COMMAND gpu_chain_test)
+endif()
+
+
+
                     

@@ -197,7 +197,11 @@ add_subdirectory(src/TAO)
 add_subdirectory(src/tools)
 
 
-if(WITH_GPU_CUDA OR WITH_GPU_AMD)
+if(WITH_GPU_CUDA OR WITH_GPU_AMD OR WITH_PRIME)
+    # Stone — also enter src/gpu when WITH_PRIME=ON (without GPU) so the
+    # host-runnable GPU unit tests under that subdirectory build and run on
+    # CPU-only CI.  The actual `gpu` static library remains gated on
+    # WITH_GPU_CUDA / WITH_GPU_AMD inside src/gpu/CMakeLists.txt itself.
     add_subdirectory(src/gpu)
 endif()
 

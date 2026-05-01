@@ -71,6 +71,22 @@ namespace mining {
 /// degenerate caller passes 0 or 1.
 static constexpr int kMinTargetChainLength = 2;
 
+/// Centralised clamp for any caller that derives a target chain length
+/// from `nbits` (or any other source) and wants the canonical lower
+/// bound applied.  Used by:
+///   * GPU `Cuda_sieve::set_target_length` / `Cuda_sieve_impl::set_target_length`
+///   * GPU `cuda_chain_open` (per-chain min/report length)
+///   * GPU `Worker_prime::run` (per-session derivation from nbits)
+///   * CPU `PrimeMiningEngine::run_pool_thread` (per-session derivation)
+/// Centralising the clamp here means a future change to the floor only
+/// needs to touch this header.
+NEXUSMINER_PRIME_THRESHOLD_FN int clamp_target_length(int target_length) noexcept
+{
+    return target_length < kMinTargetChainLength
+               ? kMinTargetChainLength
+               : target_length;
+}
+
 /// Lower bound on the number of sieve survivors a 4-byte (= 120 integer)
 /// sieve window must contain for it to *possibly* host a length-T
 /// Cunningham chain.
@@ -81,9 +97,7 @@ static constexpr int kMinTargetChainLength = 2;
 /// that is the bug class this header was created to prevent.
 NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_floor(int target_length) noexcept
 {
-    return target_length < kMinTargetChainLength
-               ? kMinTargetChainLength
-               : target_length;
+    return clamp_target_length(target_length);
 }
 
 /// Minimum sieve-survivor slot count for an *assembled* chain candidate
@@ -102,10 +116,28 @@ NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_floor(int target_length) noexc
 /// lower bound — that conflation IS PR #672's regression class).
 NEXUSMINER_PRIME_THRESHOLD_FN int close_chain_min(int target_length) noexcept
 {
-    return (target_length < kMinTargetChainLength
-                ? kMinTargetChainLength
-                : target_length)
-           + 1;
+    return clamp_target_length(target_length) + 1;
+}
+
+/// Largest target chain length T for which the GPU `find_chain.cu`
+/// kernel-1 4-byte (== 30*4 = 120 integer) popcount window is still a
+/// *correct* necessary-condition early-exit.  `find_chain_kernel`'s
+/// inline doc says: "this is only valid up to min chain length 9.
+/// above 9 requires 5 bytes."  At maxGap = 12 a length-9 chain spans
+/// at most ~108 integers which fits inside a 120-integer window, but
+/// a length-10 chain can span up to ~120 integers and may straddle
+/// the window boundary.  Above this ceiling the kernel must SKIP the
+/// popcount early-exit (the `popcount_window_floor(T) > 8` filter
+/// would discard windows that could host a winner — that is exactly
+/// the bug class this header exists to prevent).
+///
+/// Both find_chain kernels in src/gpu/src/gpu/cuda_prime/find_chain.cu
+/// gate their popcount tests on `T <= popcount_window_supported_max()`.
+/// The `close_chain_min()` quality gate has no such ceiling — it is
+/// applied to a fully-assembled chain, so it stays correct at any T.
+NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_supported_max() noexcept
+{
+    return 9;
 }
 
 } // namespace mining

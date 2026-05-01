@@ -36,6 +36,12 @@ namespace nexusminer {
 			void synchronize();
 			void init_sieve_size(int device, Cuda_sieve::Cuda_sieve_properties& sieve_properties);
 
+			// Update the per-session target T mirrored into m_sieve_properties.
+			// Called by Cuda_sieve::set_target_length(); kept here so the
+			// kernel-arg copy of properties (which Cuda_sieve_impl owns) tracks
+			// the same value the public Cuda_sieve sees.
+			void set_target_length(int target_length);
+
 
 		private:
 			int m_device = 0;

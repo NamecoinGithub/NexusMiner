@@ -4,6 +4,8 @@
 #include "find_chain.cuh"
 #include "sieve_small_prime_constants.cuh"
 #include "sieve_lookup_tables.cuh"
+#include "mining/prime_thresholds.hpp"
+#include <algorithm>
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
@@ -788,6 +790,13 @@ namespace nexusminer {
         //Here we read the amount of shared memory available and set the size of the sieve.  Do this once when the miner starts. 
         void Cuda_sieve_impl::init_sieve_size(int device, Cuda_sieve::Cuda_sieve_properties& sieve_properties)
         {
+            // Stone — preserve the caller's per-session target T across the
+            // device-derived field reset below.  Cuda_sieve sets
+            // sieve_properties.m_min_chain_length on construct (and on every
+            // set_target_length()); we must not clobber it here even though
+            // every other field is overwritten from device attributes.
+            const int preserved_min_chain_length = sieve_properties.m_min_chain_length;
+
             //get max shared memory available to each thread block
             int shared_memory_size;
             #ifdef GPU_CUDA_ENABLED
@@ -824,8 +833,20 @@ namespace nexusminer {
             sieve_properties.m_sieve_total_size = sieve_properties.m_kernel_sieve_size_words_per_block * Cuda_sieve::m_num_blocks; //size of the sieve in words
             sieve_properties.m_sieve_range = sieve_properties.m_sieve_total_size * Cuda_sieve::m_sieve_word_range;
 
+            // Restore the per-session target T preserved at function entry.
+            sieve_properties.m_min_chain_length = preserved_min_chain_length;
+
             //keep a local cache of sieve properties
             m_sieve_properties = sieve_properties;
+        }
+
+        // Update the per-session target Cunningham chain length T mirrored
+        // into m_sieve_properties so the next find_chains()/sieve_* dispatch
+        // sees the new T via the kernel-arg copy of properties.
+        void Cuda_sieve_impl::set_target_length(int target_length)
+        {
+            m_sieve_properties.m_min_chain_length =
+                std::max(target_length, nexusminer::mining::kMinTargetChainLength);
         }
 
         //allocate global memory and load values used by the sieve to the gpu 
