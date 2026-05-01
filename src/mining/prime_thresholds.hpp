@@ -92,6 +92,27 @@ NEXUSMINER_PRIME_THRESHOLD_FN int close_chain_min(int target_length) noexcept
                : target_length;
 }
 
+/// Largest target chain length T for which the GPU `find_chain.cu`
+/// kernel-1 4-byte (== 30*4 = 120 integer) popcount window is still a
+/// *correct* necessary-condition early-exit.  `find_chain_kernel`'s
+/// inline doc says: "this is only valid up to min chain length 9.
+/// above 9 requires 5 bytes."  At maxGap = 12 a length-9 chain spans
+/// at most ~108 integers which fits inside a 120-integer window, but
+/// a length-10 chain can span up to ~120 integers and may straddle
+/// the window boundary.  Above this ceiling the kernel must SKIP the
+/// popcount early-exit (the `popcount_window_floor(T) > 8` filter
+/// would discard windows that could host a winner — that is exactly
+/// the bug class this header exists to prevent).
+///
+/// Both find_chain kernels in src/gpu/src/gpu/cuda_prime/find_chain.cu
+/// gate their popcount tests on `T <= popcount_window_supported_max()`.
+/// The `close_chain_min()` quality gate has no such ceiling — it is
+/// applied to a fully-assembled chain, so it stays correct at any T.
+NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_supported_max() noexcept
+{
+    return 9;
+}
+
 } // namespace mining
 } // namespace nexusminer
 

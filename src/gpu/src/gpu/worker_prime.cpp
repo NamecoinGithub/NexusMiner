@@ -2,12 +2,14 @@
 #include "cpu/prime_validation.hpp"
 #include "config/config.hpp"
 #include "stats/stats_collector.hpp"
+#include "mining/prime_thresholds.hpp"
 #include "prime/prime.hpp"
 #include "prime/sieve.hpp"
 #include "block.hpp"
 #include <asio.hpp>
 #include <primesieve.hpp>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <sstream> 
@@ -90,7 +92,8 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			m_pool_nbits = nbits;
 		}
 
-		m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+		m_difficulty.store(m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits,
+		                   std::memory_order_relaxed);
 		m_base_hash = m_block.GetPrimeBaseHash();
 		//Now we have the hash of the block header.  We use this to feed the miner.
 
@@ -125,7 +128,8 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			m_pool_nbits = nbits;
 		}
 
-		m_difficulty = m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+		m_difficulty.store(m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits,
+		                   std::memory_order_relaxed);
 
 		// Optimization: Use precomputed base hash from WorkPackage if available
 		const auto& precomputed_hash = work_package->get_prime_base_hash();
@@ -200,6 +204,37 @@ void Worker_prime::run()
 			local_block = m_block;
 			local_base_hash = m_base_hash;
 			local_nonce = m_nonce;
+
+			// Stone — per-session target Cunningham chain length T.  Mirrors
+			// the CPU PrimeMiningEngine derivation (prime_mining_engine.cpp:
+			// target_length = ceil(nbits / 1e7), clamped to >= 2).  Pushed
+			// into the GPU sieve BEFORE clear_chains/calculate_starting_multiples
+			// so the next find_chains() launch sees the new T via the
+			// Cuda_sieve_properties kernel argument.  Without this plumbing
+			// the GPU sieve was permanently gated at the prior compile-time
+			// Cuda_sieve::m_min_chain_length=9 — silently dropping length-7/8
+			// winners at pool difficulty < 9.
+			const std::uint32_t nbits_for_target =
+				m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+			int target_length = static_cast<int>(
+				std::ceil(static_cast<double>(nbits_for_target) / 10000000.0));
+			if (target_length < nexusminer::mining::kMinTargetChainLength)
+				target_length = nexusminer::mining::kMinTargetChainLength;
+			const int previous_target_length = m_segmented_sieve->get_target_length();
+			if (previous_target_length != target_length)
+			{
+				m_logger->info(spdlog::fmt_lib::runtime(m_log_leader +
+					"target_length " + std::to_string(previous_target_length) +
+					" -> " + std::to_string(target_length) +
+					" (nbits=" + std::to_string(nbits_for_target) +
+					", popcount_floor=" +
+					std::to_string(nexusminer::mining::popcount_window_floor(target_length)) +
+					", close_chain_min=" +
+					std::to_string(nexusminer::mining::close_chain_min(target_length)) +
+					")"));
+			}
+			m_segmented_sieve->set_target_length(target_length);
+
 			uint1k startprime = local_base_hash + local_nonce;
 			m_segmented_sieve->set_sieve_start(startprime);
 			local_nonce = static_cast<uint64_t>(m_segmented_sieve->get_sieve_start() - local_base_hash);
@@ -394,7 +429,7 @@ double Worker_prime::getDifficulty(const uint1k& p)
 
 double Worker_prime::getNetworkDifficulty()
 {
-	return m_difficulty / 10000000.0;
+	return m_difficulty.load(std::memory_order_relaxed) / 10000000.0;
 }
 
 bool Worker_prime::difficulty_check(const uint1k& p)
@@ -445,8 +480,12 @@ void Worker_prime::publish_statistics_snapshot()
 	prime_stats.m_range_searched = m_range_searched;
 	prime_stats.m_most_difficult_chain = m_segmented_sieve->m_best_chain;
 	{
+		// Snapshot m_difficulty under the lock for ordering with the
+		// matching m_block snapshot in run() — even though the load
+		// itself is now atomic, we keep the lock so the two values
+		// (difficulty + most-recent block) stay session-consistent.
 		std::scoped_lock<std::mutex> lck(m_mtx);
-		prime_stats.m_difficulty = m_difficulty;
+		prime_stats.m_difficulty = m_difficulty.load(std::memory_order_relaxed);
 	}
 	m_published_stats.store(std::move(prime_stats));
 }

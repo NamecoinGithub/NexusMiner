@@ -84,6 +84,15 @@ namespace nexusminer {
 			Cuda_sieve::Cuda_sieve_properties get_sieve_properties();
 			void generate_trial_divisors();
 
+			// Stone — per-session SSOT plumbing for Cunningham chain length T.
+			// Forwards to Cuda_sieve::set_target_length() AND mirrors the
+			// clamped value into this->m_min_chain_length so host-side stats
+			// code (e.g. expected_chain_density) sees the same T as the
+			// kernels.  Worker_prime calls this from the worker thread on
+			// every set_block() before the next sieve loop iteration.
+			void set_target_length(int target_length);
+			int  get_target_length() const noexcept { return m_min_chain_length; }
+
 		private:
 			//mod 30 wheel using primorial 2*3*5 = 30.  Each bit represents a possible prime location in the wheel {1,7,11,13,17,19,23,29} 
 			static constexpr int sieve30_offsets[]{ 1,7,11,13,17,19,23,29 };  // each bit in the sieve30 represets an offset from the base mod 30
@@ -109,7 +118,15 @@ namespace nexusminer {
 			static constexpr int m_fermat_test_batch_size_max = mining::GPU_FERMAT_BATCH_SIZE_MAX;
 			static constexpr int m_segment_batch_size = Cuda_sieve::m_kernel_segments_per_block * Cuda_sieve::m_num_blocks; //number of segments to sieve in one batch
 			uint64_t m_sieve_range;
-			static constexpr int m_min_chain_length = mining::MIN_CHAIN_LENGTH;
+			// Stone — per-session target Cunningham chain length T.  Was previously
+			// `static constexpr int = mining::MIN_CHAIN_LENGTH (=8)`; now an
+			// instance field so Worker_prime can drive it per session via
+			// set_target_length() (mirroring the CPU Sieve::set_target_length()
+			// SSOT).  Default mirrors mining::MIN_CHAIN_LENGTH so any caller that
+			// never invokes set_target_length() preserves legacy behaviour.
+			// Read-only host-side; kept in lockstep with m_cuda_sieve.m_min_chain_length
+			// (the kernel-arg value) by Sieve::set_target_length().
+			int m_min_chain_length = mining::MIN_CHAIN_LENGTH;
 			static constexpr uint32_t large_prime_count = 0;
 
 			//stats

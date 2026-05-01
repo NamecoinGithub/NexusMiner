@@ -70,7 +70,15 @@ private:
 
     std::uint32_t m_primes{ 0 };
     std::uint32_t m_chains{ 0 };
-    std::uint32_t m_difficulty{ 0 };
+    // Stone — m_difficulty is read on the worker thread (getNetworkDifficulty,
+    // publish_statistics_snapshot) without holding m_mtx, but written under
+    // m_mtx by set_block().  Make it std::atomic to close the documented
+    // data race.  Tearing was benign on x86 for uint32_t but we want this
+    // race-free under TSAN and on weakly-ordered architectures.  All reads
+    // use memory_order_relaxed since this value is purely informational and
+    // any specific session-vs-snapshot ordering is established by the
+    // surrounding scoped_lock around the m_block snapshot.
+    std::atomic<std::uint32_t> m_difficulty{ 0 };
 
     std::uint32_t m_pool_nbits;
 
