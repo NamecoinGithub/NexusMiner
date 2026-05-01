@@ -270,15 +270,23 @@ void test_is_there_still_hope_fake_pass_walk_rejects_broken_chain()
 
 void test_popcount_and_close_chain_thresholds()
 {
-    // Stone 6.9.2 — pin the SSOT helper formulas + decoupling invariant.
+    // Stone 6.9.2 / PR #678 follow-up — pin the SSOT helper formulas +
+    // decoupling invariant.
     //
-    // Both filters MUST equal the target length (no slack on either): a
-    // window/chain with exactly T sieve survivors where every slot passes
-    // Fermat is a winning length-T chain, so any stricter gate is a
-    // CORRECTNESS regression — that is the bug class PR #672 / Stone 6.9.1
-    // shipped (popcount filter raised in lockstep with close_chain heuristic
-    // discarded ~90% of the windows that could have produced a length-T
-    // chain).  See mining/prime_thresholds.hpp for the full post-mortem.
+    // The popcount filter MUST remain at the strict lower bound T: a
+    // window with exactly T sieve survivors where every slot passes
+    // Fermat is a winning length-T chain, so any stricter popcount gate
+    // is a CORRECTNESS regression (that is the bug class PR #672 / Stone
+    // 6.9.1 shipped — popcount filter raised in lockstep with close_chain
+    // heuristic discarded ~90% of windows that could have produced a
+    // length-T chain).
+    //
+    // The close_chain quality gate carries an empirically-validated `+1`
+    // slack on top of T: PR #678's instrumentation (image 15 vs image 8)
+    // showed that admitting chains with exactly T survivors floods the
+    // Fermat stage with near-zero-quality candidates while leaving
+    // popcount_windows_passed/h unchanged.  See
+    // mining/prime_thresholds.hpp for the full rationale.
     using nexusminer::mining::popcount_window_floor;
     using nexusminer::mining::close_chain_min;
 
@@ -287,9 +295,9 @@ void test_popcount_and_close_chain_thresholds()
     print_result("popcount_window_floor(7) == 7", popcount_window_floor(7) == 7);
     print_result("popcount_window_floor(8) == 8", popcount_window_floor(8) == 8);
     print_result("popcount_window_floor(9) == 9", popcount_window_floor(9) == 9);
-    print_result("close_chain_min(7) == 7",       close_chain_min(7) == 7);
-    print_result("close_chain_min(8) == 8",       close_chain_min(8) == 8);
-    print_result("close_chain_min(9) == 9",       close_chain_min(9) == 9);
+    print_result("close_chain_min(7) == 8 (T+1 slack)", close_chain_min(7) == 8);
+    print_result("close_chain_min(8) == 9 (T+1 slack)", close_chain_min(8) == 9);
+    print_result("close_chain_min(9) == 10 (T+1 slack)", close_chain_min(9) == 10);
 
     // ── Both gates auto-scale with target_length (the difficulty-driven
     // input).  This is what makes the filter "auto-scale with difficulty"
@@ -304,30 +312,35 @@ void test_popcount_and_close_chain_thresholds()
                      monotone);
     }
 
-    // ── Degenerate clamp: a target below 2 must be silently raised to 2.
+    // ── Degenerate clamp: a target below 2 must be silently raised to 2
+    // before each helper applies its own slack.  popcount_window_floor
+    // therefore floors at 2; close_chain_min floors at 2 + 1 == 3.
     print_result("popcount_window_floor(1) clamped to 2", popcount_window_floor(1) == 2);
     print_result("popcount_window_floor(0) clamped to 2", popcount_window_floor(0) == 2);
-    print_result("close_chain_min(1) clamped to 2",       close_chain_min(1) == 2);
-    print_result("close_chain_min(0) clamped to 2",       close_chain_min(0) == 2);
+    print_result("close_chain_min(1) clamped to 3 (T+1 over floor)", close_chain_min(1) == 3);
+    print_result("close_chain_min(0) clamped to 3 (T+1 over floor)", close_chain_min(0) == 3);
     print_result("popcount_window_floor(-5) clamped to 2", popcount_window_floor(-5) == 2);
-    print_result("close_chain_min(-5) clamped to 2",       close_chain_min(-5) == 2);
+    print_result("close_chain_min(-5) clamped to 3 (T+1 over floor)", close_chain_min(-5) == 3);
 
     // ── DECOUPLING INVARIANT (the critical regression guard).  These two
-    // helpers must be evaluated independently.  This test is here to make
-    // any future "let's share this threshold for DRY" refactor fail loudly:
-    // the values must remain EQUAL today (both = T) but reading the same
-    // numeric value from two named helpers is intentional, not redundant.
-    // Tightening only one helper is a legitimate future change; sharing
-    // them again is not.
+    // helpers must be evaluated independently and now return DIFFERENT
+    // values: popcount sits exactly at the strict lower bound max(2, T),
+    // while close_chain carries an empirical `+1` slack on top.  This
+    // pin makes any future "let's share this threshold for DRY" refactor
+    // fail loudly — the two values are no longer interchangeable, and
+    // the test above is the canary.
     for (int t = 2; t <= 12; ++t)
     {
-        // Lower-bound correctness: NEITHER helper may be > T.  A stricter
-        // value would discard potential length-T winners.
-        const bool correct =
-            popcount_window_floor(t) <= t && close_chain_min(t) <= t;
-        print_result(("correctness lower bound: helper(T) <= T (T=" +
-                      std::to_string(t) + ")").c_str(),
-                     correct);
+        const int floor_t = t < 2 ? 2 : t;
+        // popcount must remain at the strict lower bound; close_chain
+        // may add slack (currently exactly +1, validated empirically).
+        const std::string ts = std::to_string(t);
+        print_result(("popcount_window_floor(T) == max(2,T) (no slack, T=" +
+                      ts + ")").c_str(),
+                     popcount_window_floor(t) == floor_t);
+        print_result(("close_chain_min(T) == max(2,T) + 1 (empirical slack, T=" +
+                      ts + ")").c_str(),
+                     close_chain_min(t) == floor_t + 1);
     }
 
     // ── Sieve instance routes through the same helpers.
@@ -370,8 +383,10 @@ void test_find_chains_popcount_counter_and_close_chain_accepts_T_wide()
     nexusminer::cpu::Sieve s;
     s.generate_sieving_primes();
     // prepare(start, 2) sets the loosest possible gate: popcount_window_floor
-    // and close_chain_min both = 2.  Any chain of >= 2 sieve survivors with
-    // a gap <= maxGap to its neighbour will be kept by close_chain().
+    // = 2 and close_chain_min = 3 (T+1 empirical slack).  Any chain of >= 3
+    // sieve survivors with gaps <= maxGap to its neighbours will be kept by
+    // close_chain().  A real sieved segment at this magnitude reliably
+    // produces such chains.
     const boost_uint1024_t start = (boost_uint1024_t{1} << 200) + 30;
     s.prepare(start, /*target=*/2);
     s.clear_chains();

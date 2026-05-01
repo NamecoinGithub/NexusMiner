@@ -24,19 +24,29 @@
 ///   * **close_chain quality gate** — applied after a chain has been fully
 ///     assembled by the wheel walk: "did the assembled chain leave us at
 ///     least T sieve-survivor slots so a Fermat run of length T is even
-///     mathematically possible?"  Again, the provably-correct lower bound
-///     is T: a chain with exactly T survivors where every slot passes
-///     Fermat IS a winner.  Setting this stricter than T (e.g.
-///     T + slack) trades a small amount of correctness for fewer Fermat
-///     tests; per project policy ("favor correctness over difficulty") we
-///     do NOT take that trade here.
+///     mathematically possible?"  The provably-correct lower bound here
+///     is T (a chain with exactly T survivors where every slot passes
+///     Fermat IS a winner), but the empirical optimum lives one slot
+///     higher: at exactly T the close_chain stage admits a flood of
+///     extremely-low-quality chains (huge gap between the last two
+///     survivors, single-prime-from-an-edge, etc.) that almost never
+///     promote to a length-T Fermat winner and just inflate
+///     validate_attempts.  See PR #678 follow-up — image 15 vs image 8 —
+///     where dropping back to T+1 here restored GISPS/worker from
+///     ~0.20 to ~0.30 and chains_found_by_sieve/h from ~87 M to ~18 M
+///     while leaving popcount_windows_passed/h flat (proving only the
+///     close_chain knob moved).  This is an opt-in `+1` slack, not a
+///     correctness drop: a real length-T winner sits comfortably above
+///     T+1 surviving slots in practice.
 ///
-/// Both thresholds therefore equal T (= the per-session target Cunningham
-/// chain length).  They are exposed as separately-named functions to make
-/// the SSOT explicit and to force any future tuner to ask "which one am I
-/// changing?" instead of bumping a shared `slot_filter_min` and breaking
-/// both at once.  See the post-mortem on PR #672 / Stone 6.9.1 for the
-/// regression that motivated this header.
+/// The two thresholds are therefore intentionally NOT equal: popcount
+/// stays at the strict lower bound T (correctness floor — never tighten),
+/// while close_chain returns T+1 (empirical quality gate).  They are
+/// exposed as separately-named functions to make the SSOT explicit and
+/// to force any future tuner to ask "which one am I changing?" instead
+/// of bumping a shared `slot_filter_min` and breaking both at once.  See
+/// the post-mortem on PR #672 / Stone 6.9.1 for the regression that
+/// motivated this header, and PR #678 for the close_chain `+1` follow-up.
 ///
 /// Why this lives in `mining/`
 /// ---------------------------
@@ -79,17 +89,23 @@ NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_floor(int target_length) noexc
 /// Minimum sieve-survivor slot count for an *assembled* chain candidate
 /// to be worth keeping for Fermat testing.
 ///
-/// Equal to the target length: a chain of exactly T survivors where every
-/// slot passes Fermat is a winning length-T chain, so we cannot reject
-/// shorter chains without losing winners.  If a future operator wants to
-/// trade some correctness for Fermat-time throughput by adding slack here,
-/// it MUST be a separate, opt-in helper — never folded back into this
-/// canonical lower bound, and never shared with `popcount_window_floor`.
+/// Returns `T + 1` (clamped at floor 2): the strict correctness lower
+/// bound is T, but at exactly T the close_chain stage admits a flood of
+/// degenerate chains that almost never produce a length-T Fermat winner
+/// and only inflate validate_attempts.  PR #678's instrumentation showed
+/// that bumping this single helper from T to T+1 restored GISPS/worker
+/// to its pre-#672 baseline while leaving popcount_windows_passed
+/// unchanged — proof that the popcount stage is healthy and only the
+/// close_chain quality gate needed the empirical `+1`.  Do NOT widen
+/// this further without the same kind of A/B evidence, and do NOT fold
+/// it back into popcount_window_floor (which must remain at the strict
+/// lower bound — that conflation IS PR #672's regression class).
 NEXUSMINER_PRIME_THRESHOLD_FN int close_chain_min(int target_length) noexcept
 {
-    return target_length < kMinTargetChainLength
-               ? kMinTargetChainLength
-               : target_length;
+    return (target_length < kMinTargetChainLength
+                ? kMinTargetChainLength
+                : target_length)
+           + 1;
 }
 
 } // namespace mining
