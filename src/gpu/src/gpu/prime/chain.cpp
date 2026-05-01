@@ -1,4 +1,6 @@
 #include "chain.hpp"
+#include <algorithm>
+#include <cstddef>
 #include <sstream>
 
 namespace nexusminer {
@@ -110,21 +112,24 @@ namespace nexusminer {
             // untested offset to "pass" and ask get_best_fermat_chain for
             // the longest run that satisfies the maxGap rule.  If even an
             // optimistic walk cannot reach m_min_chain_length, the chain is
-            // definitely busted.
-            std::vector<Fermat_test_status> saved;
-            saved.reserve(m_offsets.size());
-            for (auto& slot : m_offsets)
+            // definitely busted.  Use a stack-resident array sized to the
+            // chain's hard cap so this never allocates (matches the device-side
+            // CudaChain layout — see cuda_chain.cuh).
+            constexpr std::size_t kMaxOffsets = 32;
+            Fermat_test_status saved[kMaxOffsets];
+            const std::size_t n = std::min(m_offsets.size(), kMaxOffsets);
+            for (std::size_t i = 0; i < n; ++i)
             {
-                saved.push_back(slot.m_fermat_test_status);
-                if (slot.m_fermat_test_status == Fermat_test_status::untested)
-                    slot.m_fermat_test_status = Fermat_test_status::pass;
+                saved[i] = m_offsets[i].m_fermat_test_status;
+                if (m_offsets[i].m_fermat_test_status == Fermat_test_status::untested)
+                    m_offsets[i].m_fermat_test_status = Fermat_test_status::pass;
             }
             uint64_t fake_base_offset = 0;
             int fake_offset = 0;
             int fake_length = 0;
             get_best_fermat_chain(fake_base_offset, fake_offset, fake_length);
             // Restore real statuses.
-            for (size_t i = 0; i < m_offsets.size(); ++i)
+            for (std::size_t i = 0; i < n; ++i)
                 m_offsets[i].m_fermat_test_status = saved[i];
 
             return fake_length >= m_min_chain_length;
