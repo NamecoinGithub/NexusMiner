@@ -133,6 +133,11 @@ runcmd:
   - |
     set -euo pipefail
     : "${RUNNER_VERSION:=2.319.1}"
+    # ^ Pin a known-good runner version.  Bump from time to time — latest
+    # releases are at https://github.com/actions/runner/releases (this is
+    # the version GitHub will eventually force on us anyway, since old
+    # runners are auto-deprecated; keeping it in env makes the bump a
+    # one-line cloud-init edit instead of an AMI rebake).
     : "${RUNNER_REPO_URL:?Set RUNNER_REPO_URL via instance user-data env}"
     : "${RUNNER_REGISTRATION_TOKEN:?Set RUNNER_REGISTRATION_TOKEN via instance user-data env}"
     INSTANCE_ID=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || hostname)

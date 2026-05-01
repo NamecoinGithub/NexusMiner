@@ -164,9 +164,14 @@ void test_local_nonce_no_inflation_after_K_iterations()
 
     const std::uint64_t total = run_inner_loop(start, T, K);
 
-    // Each iteration k (0-indexed) reports (T - 0 + (k==0 ? 1 : 1)) hashes
-    // because doneNonce = first_nonce + T and the kernel does +1 once per
-    // call.  So the cumulative is K * T + K, NOT K(K+1)/2 * T + K.
+    // Each iteration k (0-indexed) reports (T - 0 + 1) hashes
+    // because doneNonce = first_nonce + T and the kernel's reported
+    // hashes_done is `doneNonce - first_nonce + 1` (the +1 is the
+    // inclusive-window fencepost from sk1024.cu's hashes_done math).
+    // So per-iter is exactly T+1, and the cumulative across K iterations
+    // is K*(T+1) = K*T + K — linear in K.  The pre-fix quadratic value
+    // (which is what an actual operator hash-rate dashboard would have
+    // shown under PR #681) is K(K+1)/2 * T + K.
     const std::uint64_t expected = static_cast<std::uint64_t>(K) * T + K;
     const std::uint64_t buggy_quadratic =
         static_cast<std::uint64_t>(K) * (K + 1) / 2 * T + K;
