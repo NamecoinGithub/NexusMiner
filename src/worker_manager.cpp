@@ -2693,6 +2693,26 @@ void Worker_manager::check_template_health()
     std::string channel_name = (channel == mining::CHANNEL_PRIME) ? "Prime" : "Hash";
     const bool has_valid_template = template_interface->has_valid_template();
 
+    // Replacement-pending safety net: a prior PUSH (e.g. same-height tip update)
+    // marked the current template as about-to-be-superseded so workers could
+    // keep mining through the BLOCK_DATA round-trip.  If the deadline has
+    // elapsed without read_template() consuming it, fall back to the normal
+    // discard + HEALTH_NO_TEMPLATE recovery path so the miner does not sit
+    // indefinitely on a template that the node has implicitly invalidated.
+    {
+        std::string expired_reason;
+        if (template_interface->take_expired_replacement_pending(expired_reason)) {
+            m_logger->warn("[Worker_manager] Replacement-pending timeout ({}) — "
+                           "promised BLOCK_DATA never arrived; falling back to "
+                           "HEALTH_NO_TEMPLATE recovery",
+                           expired_reason.empty() ? "unspecified" : expired_reason);
+            template_interface->discard_template("replacement_timeout:" +
+                (expired_reason.empty() ? std::string("unspecified") : expired_reason));
+            retry_template_request(protocol::GetBlockReason::HEALTH_NO_TEMPLATE);
+            return;
+        }
+    }
+
     if (!has_valid_template) {
         // No template in HEALTHY state — force fresh work/GET_BLOCK so local gates
         // do not stall BLOCK_DATA delivery while the primary session is alive.

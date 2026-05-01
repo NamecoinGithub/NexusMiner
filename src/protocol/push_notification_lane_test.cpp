@@ -617,7 +617,14 @@ int main()
             [&tracker](uint32_t u, uint32_t c, uint32_t d) { tracker.OnPushNotification(u, c, d); });
 
         print_test_result("Same-height tip replacement: push substantively processed", push_processed);
-        print_test_result("Same-height tip replacement discards active template", !tmpl_interface.has_valid_template());
+        // Option A + B safety net: same-height tip update no longer discards
+        // the active template. Workers continue mining until BLOCK_DATA atomically
+        // swaps in. The replacement-pending flag is set so the worker health
+        // monitor can fall back to discard if BLOCK_DATA never arrives.
+        print_test_result("Same-height tip replacement keeps active template VALID (no recovery epoch)",
+            tmpl_interface.has_valid_template());
+        print_test_result("Same-height tip replacement marks template replacement-pending",
+            tmpl_interface.is_replacement_pending());
     }
 
     // ====================================================================
@@ -802,8 +809,12 @@ int main()
         solo.process_messages(packet, nullptr);
 
         print_test_result("Solo same-height push does not trigger recovery handler", !recovery_called);
-        print_test_result("Solo same-height push discards obsolete template",
-            !solo.get_template_interface()->has_valid_template());
+        // Option A + B safety net: same-height push leaves template VALID so
+        // workers keep mining through the BLOCK_DATA round-trip.
+        print_test_result("Solo same-height push keeps template VALID (no HEALTH_NO_TEMPLATE epoch)",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Solo same-height push marks template replacement-pending",
+            solo.get_template_interface()->is_replacement_pending());
     }
 
     // ====================================================================
@@ -861,8 +872,14 @@ int main()
         print_test_result("Disconnected-session push does not trigger hard recovery handler", !recovery_called);
         print_test_result("Disconnected-session push updates unified height", push_snapshot.push_unified_height == 9200);
         print_test_result("Disconnected-session push updates channel height", push_snapshot.push_channel_height == 100);
-        print_test_result("Disconnected-session push discards template when disconnected",
-            !solo.get_template_interface()->has_valid_template());
+        // Option A + B safety net: same-height push (even on disconnected session)
+        // marks the template replacement-pending instead of discarding it. The
+        // safety-net timeout in Worker_manager will discard if BLOCK_DATA never
+        // arrives.
+        print_test_result("Disconnected-session push keeps template VALID (replacement-pending instead)",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Disconnected-session push marks template replacement-pending",
+            solo.get_template_interface()->is_replacement_pending());
     }
 
     // ====================================================================
@@ -969,8 +986,13 @@ int main()
             Packet push_packet(static_cast<uint8_t>(MinerLLP::HASH_BLOCK_AVAILABLE), push_payload);
             solo.process_messages(push_packet, nullptr);
         }
-        print_test_result("Push tip anchor mismatch discards old template",
-            !solo.get_template_interface()->has_valid_template());
+        // Option A + B safety net: push tip-anchor mismatch no longer discards
+        // the old template; it is marked replacement-pending so workers continue
+        // mining until BLOCK_DATA atomically swaps in below.
+        print_test_result("Push tip anchor mismatch keeps old template VALID (replacement-pending)",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Push tip anchor mismatch marks template replacement-pending",
+            solo.get_template_interface()->is_replacement_pending());
         {
             auto snap = solo.get_height_tracker_snapshot();
             print_test_result("Push tip anchor (H_new) was recorded",
