@@ -1,6 +1,7 @@
 #ifndef NEXUSMINER_GPU_CHAIN_HPP
 #define NEXUSMINER_GPU_CHAIN_HPP
 
+#include <cstdint>
 #include <string>
 #include <vector>
 //#include "sieve_utils.hpp"

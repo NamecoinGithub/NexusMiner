@@ -67,6 +67,25 @@ private:
     int m_best_leading_zeros;
     int m_met_difficulty_count;
 
+    // Stone — bug #7 fix: per-worker nonce sharding.
+    // Worker_prime carefully shards via (m_internal_id << 48); CPU worker_hash
+    // does the same (src/cpu/src/cpu/worker_hash.cpp:88).  GPU worker_hash
+    // previously just used m_block.nNonce as-is, so multiple GPU hash workers
+    // on the same template would collide in nonce space.  We now compute and
+    // store the same shard per session.
+    std::uint64_t m_starting_nonce = 0;
+
+    // Stone — bug #8 fix: keccak (CPU revalidation) mismatch tracking.
+    // The CUDA kernel previously printed a `std::cout` line on mismatch and
+    // kept mining; sk1024_cpu_hash now reports mismatches via an out-counter
+    // so the worker can route them through spdlog and treat repeated
+    // mismatches as a hardware fault (matching ccminer/T-Rex patterns).
+    // After kKeccakMismatchFaultThreshold consecutive mismatches in a session
+    // we set m_running=false; a healthy submission resets the counter.
+    static constexpr std::uint32_t kKeccakMismatchFaultThreshold = 3;
+    std::atomic<std::uint32_t> m_keccak_mismatch_count{0};
+    std::atomic<std::uint32_t> m_keccak_mismatch_total{0};
+
 };
 }
 

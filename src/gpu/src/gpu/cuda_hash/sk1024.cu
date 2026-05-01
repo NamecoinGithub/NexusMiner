@@ -763,7 +763,8 @@ extern bool cuda_sk1024_hash(
 	uint64_t* hashes_done,
 	uint32_t throughput,
 	uint32_t threadsPerBlock,
-	uint32_t nHeight)
+	uint32_t nHeight,
+	uint32_t* keccak_mismatches)
 {
 	uint64_t* ptarget = (uint64_t*)&TheTarget;
 
@@ -798,9 +799,21 @@ extern bool cuda_sk1024_hash(
 		}
 		else
 		{
-			std::cout << "GPU # " << thr_id << ": result for nonce " <<  foundNonce << " does not validate on CPU!" << std::endl;
-
-			std::cout << std::hex << std::setw(16) << std::setfill('0') << keccak[15] << " > " << std::setw(16) << std::setfill('0') << Htarg << std::endl;
+			// Stone — bug #8 fix.  GPU-reported winner failed CPU revalidation.
+			// This is a hardware fault on the device (bit-flip, marginal clocks,
+			// thermal throttle in flight).  Previously this printed to std::cout
+			// and fell through to the throughput-credit path, silently inflating
+			// hashes_done for a faulty window.  Now: report via the out-counter
+			// and DO NOT credit the suspect window to *hashes_done.  Worker_hash
+			// will route the count through spdlog and treat repeated mismatches
+			// as a hardware fault that takes the worker offline.
+			if (keccak_mismatches != nullptr)
+				*keccak_mismatches += 1;
+			*hashes_done = 0;
+			// Do NOT advance the data buffer's nonce here either — the next
+			// call from Worker_hash::run() will retry with the same window
+			// (which is what the operator wants while diagnosing the fault).
+			return false;
 		}
 
 
