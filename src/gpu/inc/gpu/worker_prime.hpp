@@ -49,6 +49,15 @@ private:
     double getNetworkDifficulty();
     bool difficulty_check(const uint1k& p);
     void publish_statistics_snapshot();
+
+    // Stone — single source of truth for the "use pool nbits if set, else
+    // block nbits" selection (mirrors the same idiom on CPU worker_hash and
+    // CPU worker_prime).  Callers MUST hold m_mtx when invoking — both
+    // m_pool_nbits and m_block.nBits are written under m_mtx by set_block().
+    std::uint32_t effective_nbits_locked() const noexcept
+    {
+        return m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
+    }
    
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<spdlog::logger> m_logger;

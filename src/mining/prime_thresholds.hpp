@@ -61,6 +61,22 @@ namespace mining {
 /// degenerate caller passes 0 or 1.
 static constexpr int kMinTargetChainLength = 2;
 
+/// Centralised clamp for any caller that derives a target chain length
+/// from `nbits` (or any other source) and wants the canonical lower
+/// bound applied.  Used by:
+///   * GPU `Cuda_sieve::set_target_length` / `Cuda_sieve_impl::set_target_length`
+///   * GPU `cuda_chain_open` (per-chain min/report length)
+///   * GPU `Worker_prime::run` (per-session derivation from nbits)
+///   * CPU `PrimeMiningEngine::run_pool_thread` (per-session derivation)
+/// Centralising the clamp here means a future change to the floor only
+/// needs to touch this header.
+NEXUSMINER_PRIME_THRESHOLD_FN int clamp_target_length(int target_length) noexcept
+{
+    return target_length < kMinTargetChainLength
+               ? kMinTargetChainLength
+               : target_length;
+}
+
 /// Lower bound on the number of sieve survivors a 4-byte (= 120 integer)
 /// sieve window must contain for it to *possibly* host a length-T
 /// Cunningham chain.
@@ -71,9 +87,7 @@ static constexpr int kMinTargetChainLength = 2;
 /// that is the bug class this header was created to prevent.
 NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_floor(int target_length) noexcept
 {
-    return target_length < kMinTargetChainLength
-               ? kMinTargetChainLength
-               : target_length;
+    return clamp_target_length(target_length);
 }
 
 /// Minimum sieve-survivor slot count for an *assembled* chain candidate
@@ -87,9 +101,7 @@ NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_floor(int target_length) noexc
 /// canonical lower bound, and never shared with `popcount_window_floor`.
 NEXUSMINER_PRIME_THRESHOLD_FN int close_chain_min(int target_length) noexcept
 {
-    return target_length < kMinTargetChainLength
-               ? kMinTargetChainLength
-               : target_length;
+    return clamp_target_length(target_length);
 }
 
 /// Largest target chain length T for which the GPU `find_chain.cu`

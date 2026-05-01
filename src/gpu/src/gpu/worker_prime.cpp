@@ -92,7 +92,7 @@ void Worker_prime::set_block(LLP::CBlock block, std::uint32_t nbits, Worker::Blo
 			m_pool_nbits = nbits;
 		}
 
-		m_difficulty.store(m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits,
+		m_difficulty.store(effective_nbits_locked(),
 		                   std::memory_order_relaxed);
 		m_base_hash = m_block.GetPrimeBaseHash();
 		//Now we have the hash of the block header.  We use this to feed the miner.
@@ -128,7 +128,7 @@ void Worker_prime::set_block(std::shared_ptr<WorkPackage> work_package, Worker::
 			m_pool_nbits = nbits;
 		}
 
-		m_difficulty.store(m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits,
+		m_difficulty.store(effective_nbits_locked(),
 		                   std::memory_order_relaxed);
 
 		// Optimization: Use precomputed base hash from WorkPackage if available
@@ -214,12 +214,10 @@ void Worker_prime::run()
 			// the GPU sieve was permanently gated at the prior compile-time
 			// Cuda_sieve::m_min_chain_length=9 — silently dropping length-7/8
 			// winners at pool difficulty < 9.
-			const std::uint32_t nbits_for_target =
-				m_pool_nbits != 0 ? m_pool_nbits : m_block.nBits;
-			int target_length = static_cast<int>(
-				std::ceil(static_cast<double>(nbits_for_target) / 10000000.0));
-			if (target_length < nexusminer::mining::kMinTargetChainLength)
-				target_length = nexusminer::mining::kMinTargetChainLength;
+			const std::uint32_t nbits_for_target = effective_nbits_locked();
+			int target_length = nexusminer::mining::clamp_target_length(
+				static_cast<int>(std::ceil(
+					static_cast<double>(nbits_for_target) / 10000000.0)));
 			const int previous_target_length = m_segmented_sieve->get_target_length();
 			if (previous_target_length != target_length)
 			{

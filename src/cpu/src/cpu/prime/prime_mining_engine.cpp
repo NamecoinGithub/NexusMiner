@@ -645,9 +645,8 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 // never disable the sieve's chain-cluster filter entirely.
                 const double required_difficulty =
                     static_cast<double>(session->nbits) / 10000000.0;
-                int target_length = static_cast<int>(
-                    std::ceil(required_difficulty));
-                if (target_length < 2) target_length = 2;
+                int target_length = nexusminer::mining::clamp_target_length(
+                    static_cast<int>(std::ceil(required_difficulty)));
 
                 // Stone 6.9.2 — observability for difficulty-driven gate
                 // changes.  Logged at INFO with a stable, greppable prefix
