@@ -573,17 +573,19 @@ namespace nexusminer {
 
         void Sieve::close_chain()
         {
-            // Stone 6.9.2 — gate on close_chain_min() (= target_length, no
-            // slack), the provably-correct minimum sieve-survivor count for a
-            // length-T Fermat run.  See mining/prime_thresholds.hpp for the
-            // post-mortem on PR #672 / Stone 6.9.1, which had bumped this gate
-            // to target+slack(T) AND shared that same threshold with the
-            // popcount window — silently dropping ~90% of the candidates that
-            // could have produced a length-T Fermat run.  The two gates are
-            // now decoupled (popcount_window_floor() vs close_chain_min())
-            // and both pinned at the bare-minimum lower bound; the
-            // close_chain_min() name lets a future operator add a heuristic
-            // tighter than T without touching the popcount filter.
+            // Stone 6.9.2 / PR #678 follow-up — gate on close_chain_min(),
+            // which is now target_length + 1 (empirical slack validated
+            // against production data: image 15 vs image 8).  See
+            // mining/prime_thresholds.hpp for the post-mortem on PR #672
+            // / Stone 6.9.1, which had bumped this gate to target+slack(T)
+            // AND shared that same threshold with the popcount window —
+            // silently dropping ~90% of the candidates that could have
+            // produced a length-T Fermat run.  The two gates are now
+            // decoupled (popcount_window_floor() vs close_chain_min()):
+            // popcount stays at the strict lower bound T (correctness
+            // floor — never tighten), close_chain_min carries the
+            // empirical `+1` quality slack to keep validate_attempts off
+            // a flood of degenerate near-zero-quality chains.
             if (m_current_chain.length() >= close_chain_min())
             {
                 //we found a chain candidate.  save it.

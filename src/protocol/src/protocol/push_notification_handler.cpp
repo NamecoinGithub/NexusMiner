@@ -257,7 +257,14 @@ bool PushNotificationHandler::handle_push_notification(
         // ─── Same-height tip replacement (reorg at same channel height) ──────
         // A hash mismatch at the same channel height means the tip anchor was
         // replaced (same-height reorg).
-        // Discard the template so the fresh one from the node replaces it.
+        // The node auto-sends BLOCK_DATA after every PUSH; that fresh template
+        // will atomically replace m_current_template inside read_template().
+        // Mark it as replacement-pending (rather than discarding) so workers
+        // keep mining the about-to-be-superseded template through the ~1-2s
+        // round-trip instead of stalling into a HEALTH_NO_TEMPLATE recovery
+        // epoch. If the replacement BLOCK_DATA never arrives, the worker
+        // health monitor will time it out and fall back to the normal
+        // discard + GET_BLOCK retry path.
         if (has_hash_prev_block)
         {
             auto const* tmpl = template_interface->get_current_template();
@@ -265,8 +272,9 @@ bool PushNotificationHandler::handle_push_notification(
                 snap.has_same_height_push_tip_replacement(tmpl->block.hashPrevBlock,
                                                           tmpl->nChannelHeight))
             {
-                m_logger->info("[Solo Push] Same-height tip update — discarding template for replacement");
-                template_interface->discard_template("same_height_tip_update");
+                m_logger->info("[Solo Push] Same-height tip update — marking template "
+                               "replacement-pending; workers continue mining until BLOCK_DATA arrives");
+                template_interface->mark_replacement_pending("same_height_tip_update");
             }
         }
 

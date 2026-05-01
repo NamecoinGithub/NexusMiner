@@ -1281,6 +1281,81 @@ int main()
     }
 
     // ====================================================================
+    // Test 21: Option A + Option B safety net — replacement_pending lifecycle
+    // ====================================================================
+    std::cout << "\nTest 21: mark_replacement_pending() lifecycle (Option A + B safety net)" << std::endl;
+    {
+        // 21a: pending leaves template VALID — the whole point of Option A:
+        //      workers must continue mining through the BLOCK_DATA round trip
+        //      instead of falling into HEALTH_NO_TEMPLATE recovery.
+        MiningTemplateInterface tmpl_iface(2, 0);
+        auto data = create_mock_template(6594400);
+        auto res = tmpl_iface.read_template(data, "test_node");
+        print_test_result("Test 21: baseline template loaded", res.is_valid);
+        print_test_result("Test 21: baseline has_valid_template() true",
+            tmpl_iface.has_valid_template());
+
+        tmpl_iface.mark_replacement_pending("same_height_tip_update", 5000);
+        print_test_result("Test 21a: has_valid_template() STAYS true while replacement pending",
+            tmpl_iface.has_valid_template());
+        print_test_result("Test 21a: is_replacement_pending() reports true within deadline",
+            tmpl_iface.is_replacement_pending());
+
+        std::string expired_reason = "sentinel";
+        bool took = tmpl_iface.take_expired_replacement_pending(expired_reason);
+        print_test_result("Test 21a: take_expired_replacement_pending() returns false before deadline",
+            !took);
+        print_test_result("Test 21a: take_*-on-not-expired clears the out-reason",
+            expired_reason.empty());
+
+        // 21b: read_template() (atomic swap) clears the pending flag — the
+        //      promised replacement arrived, so the safety net must NOT later
+        //      trigger a spurious HEALTH_NO_TEMPLATE recovery.
+        auto data2 = create_mock_template(6594401);
+        auto res2 = tmpl_iface.read_template(data2, "test_node");
+        print_test_result("Test 21b: replacement template loaded", res2.is_valid);
+        print_test_result("Test 21b: read_template clears replacement-pending",
+            !tmpl_iface.is_replacement_pending());
+        std::string after_swap_reason = "sentinel";
+        bool took_after_swap =
+            tmpl_iface.take_expired_replacement_pending(after_swap_reason);
+        print_test_result("Test 21b: no expired-pending observable after swap",
+            !took_after_swap && after_swap_reason.empty());
+
+        // 21c: deadline expiry surfaces the reason exactly once and clears
+        //      the flag (so the next health tick cannot double-trigger).
+        tmpl_iface.mark_replacement_pending("same_height_tip_update", 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        print_test_result("Test 21c: is_replacement_pending() false past deadline",
+            !tmpl_iface.is_replacement_pending());
+        std::string out_reason;
+        bool expired = tmpl_iface.take_expired_replacement_pending(out_reason);
+        print_test_result("Test 21c: take_expired_replacement_pending() returns true after deadline",
+            expired);
+        print_test_result("Test 21c: expired reason matches the recorded label",
+            out_reason == "same_height_tip_update");
+        std::string second_call_reason = "sentinel";
+        bool second_call =
+            tmpl_iface.take_expired_replacement_pending(second_call_reason);
+        print_test_result("Test 21c: take_expired_replacement_pending() is idempotent (second call false)",
+            !second_call && second_call_reason.empty());
+
+        // 21d: discard_template() while pending also clears the flag, so a
+        //      caller that decides to bail early does not leave a dangling
+        //      deadline behind.
+        tmpl_iface.mark_replacement_pending("same_height_tip_update", 5000);
+        print_test_result("Test 21d: pending re-armed", tmpl_iface.is_replacement_pending());
+        tmpl_iface.discard_template("test_explicit_discard_clears_pending");
+        print_test_result("Test 21d: discard_template clears replacement-pending",
+            !tmpl_iface.is_replacement_pending());
+        std::string after_discard_reason = "sentinel";
+        bool took_after_discard =
+            tmpl_iface.take_expired_replacement_pending(after_discard_reason);
+        print_test_result("Test 21d: no expired-pending observable after discard",
+            !took_after_discard && after_discard_reason.empty());
+    }
+
+    // ====================================================================
     // Summary
     // ====================================================================
     std::cout << "\n========================================" << std::endl;

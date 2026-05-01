@@ -219,6 +219,15 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             
             // Update template received time for age monitoring
             m_template_received_time = std::chrono::steady_clock::now();
+
+            // Atomic swap completed — any in-flight replacement promise (set
+            // by mark_replacement_pending() while the previous template was
+            // still being mined) is now satisfied. Clearing here ensures
+            // take_expired_replacement_pending() does not later trigger a
+            // spurious HEALTH_NO_TEMPLATE recovery for a swap that succeeded.
+            m_replacement_pending = false;
+            m_replacement_deadline = {};
+            m_replacement_reason.clear();
         }
         
         m_templates_validated.fetch_add(1, std::memory_order_relaxed);
@@ -1585,6 +1594,73 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     mark_template_stale_unsafe(reason);
     m_template_channel_height_snapshot = 0;
     m_has_snapshot = false;
+
+    // Any pending-replacement promise is moot once we explicitly discard
+    // (either we just timed it out via take_expired_replacement_pending(),
+    // or some other path has decided the template is unrecoverable).
+    m_replacement_pending = false;
+    m_replacement_deadline = {};
+    m_replacement_reason.clear();
+}
+
+void MiningTemplateInterface::mark_replacement_pending(const std::string& reason,
+                                                      int64_t timeout_ms)
+{
+    if (timeout_ms <= 0) {
+        timeout_ms = REPLACEMENT_PENDING_DEFAULT_TIMEOUT_MS;
+    }
+
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+
+    // Reset the feed-debounce triple so the imminent BLOCK_DATA reply is not
+    // suppressed as a duplicate by feed_current_template(). This mirrors the
+    // reset performed by discard_template_unsafe() / mark_template_stale_unsafe()
+    // but without the destructive state change those methods imply.
+    m_last_feed_tp = {};
+    m_last_feed_height = 0;
+    m_last_feed_prev_hash = {};
+
+    const bool was_pending = m_replacement_pending;
+    m_replacement_pending = true;
+    m_replacement_deadline = std::chrono::steady_clock::now()
+                           + std::chrono::milliseconds(timeout_ms);
+    m_replacement_reason = reason;
+
+    if (!was_pending) {
+        m_logger->info("[TemplateInterface] \u26a1 Replacement pending: {} "
+                       "(template stays VALID, deadline {}ms) \u2014 workers continue mining "
+                       "until BLOCK_DATA atomically swaps in",
+                       reason, timeout_ms);
+    } else {
+        m_logger->debug("[TemplateInterface] Replacement-pending deadline refreshed: {} ({}ms)",
+                        reason, timeout_ms);
+    }
+}
+
+bool MiningTemplateInterface::is_replacement_pending() const
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    if (!m_replacement_pending) {
+        return false;
+    }
+    return std::chrono::steady_clock::now() < m_replacement_deadline;
+}
+
+bool MiningTemplateInterface::take_expired_replacement_pending(std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    reason.clear();
+    if (!m_replacement_pending) {
+        return false;
+    }
+    if (std::chrono::steady_clock::now() < m_replacement_deadline) {
+        return false;
+    }
+    reason = m_replacement_reason;
+    m_replacement_pending = false;
+    m_replacement_deadline = {};
+    m_replacement_reason.clear();
+    return true;
 }
 
 bool MiningTemplateInterface::needs_channel_height_finalization() const
