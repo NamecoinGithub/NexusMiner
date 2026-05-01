@@ -400,6 +400,76 @@ public:
      * @param reason Reason for discarding template
      */
     void discard_template(const std::string& reason);
+
+    /**
+     * @brief Default deadline (in ms) used by mark_replacement_pending() when
+     *        the caller does not supply an explicit timeout.
+     *
+     * Sized to comfortably cover a remote-node round trip for the auto-sent
+     * BLOCK_DATA reply that follows a PUSH notification (~1.5s on localhost,
+     * meaningfully larger over the wire). Kept well under the existing
+     * TEMPLATE_AGE_WARNING window so that a lost reply still surfaces via
+     * the normal HEALTH_NO_TEMPLATE recovery path long before the operator
+     * notices a stalled miner.
+     */
+    static constexpr int64_t REPLACEMENT_PENDING_DEFAULT_TIMEOUT_MS = 5000;
+
+    /**
+     * @brief Mark the current template as about to be superseded.
+     *
+     * Used by callers that already know a replacement BLOCK_DATA is in flight
+     * (e.g. a same-height tip-update PUSH where the node will auto-send the
+     * fresh template). Unlike discard_template(), this does NOT change
+     * TemplateState — has_valid_template() continues to return true so workers
+     * keep mining the existing (about-to-be-superseded) template until the
+     * replacement atomically swaps in via read_template(). This avoids a
+     * HEALTH_NO_TEMPLATE recovery epoch and the associated cursor churn
+     * during the round-trip window (typically 1-2s).
+     *
+     * Internally:
+     *   - resets the feed-debounce triple so the imminent feed is not
+     *     suppressed as a "duplicate"
+     *   - records a deadline; if the replacement does not arrive within
+     *     @p timeout_ms, take_expired_replacement_pending() will surface the
+     *     reason so the caller can fall back to discard_template() and the
+     *     normal HEALTH_NO_TEMPLATE recovery path
+     *   - does NOT touch TemplateState, m_last_unified_height, or the
+     *     template-cleared callback (the keepalive prevblock_suffix stays
+     *     current until the real swap)
+     *
+     * Idempotent: repeated calls only refresh the deadline; the reason
+     * recorded is the most recent one.
+     *
+     * @param reason   Operator-facing label for logs and timeout fallback.
+     * @param timeout_ms  Grace window before take_expired_replacement_pending()
+     *                    returns the reason. 0 (default) selects
+     *                    REPLACEMENT_PENDING_DEFAULT_TIMEOUT_MS.
+     */
+    void mark_replacement_pending(const std::string& reason,
+                                  int64_t timeout_ms = 0);
+
+    /**
+     * @brief True if a replacement template is in flight and the deadline
+     *        has not yet elapsed.
+     *
+     * Returns false when no replacement is pending OR when the deadline has
+     * already passed. Diagnostic only — does not mutate state. Use
+     * take_expired_replacement_pending() to atomically observe + clear the
+     * expired-pending state.
+     */
+    bool is_replacement_pending() const;
+
+    /**
+     * @brief Atomically observe and clear an expired replacement-pending flag.
+     *
+     * @param[out] reason  Receives the recorded reason iff the call returns
+     *                     true (cleared otherwise).
+     * @return true exactly when a replacement was pending AND its deadline has
+     *         elapsed without read_template() consuming it; the pending flag
+     *         is cleared as a side effect so the caller may then invoke
+     *         discard_template() to enter the normal recovery path.
+     */
+    bool take_expired_replacement_pending(std::string& reason);
     
     /**
      * @brief Get current template height
@@ -702,6 +772,18 @@ private:
     std::chrono::steady_clock::time_point m_last_feed_tp{};
     uint32_t m_last_feed_height{0};
     uint1024_t m_last_feed_prev_hash{0};
+
+    // Replacement-pending state (Option A + Option B safety net).
+    // Set by mark_replacement_pending() when a fresh BLOCK_DATA is known to be
+    // in flight (e.g. same-height tip-update PUSH). Cleared by read_template()
+    // on the successful atomic swap, by discard_template_unsafe(), or by
+    // take_expired_replacement_pending() once the deadline elapses without a
+    // replacement arriving. While set + before deadline, callers leave the
+    // current template VALID so workers keep mining instead of churning into
+    // a HEALTH_NO_TEMPLATE recovery epoch.
+    bool m_replacement_pending{false};
+    std::chrono::steady_clock::time_point m_replacement_deadline{};
+    std::string m_replacement_reason{};
 };
 
 } // namespace protocol
