@@ -10,6 +10,7 @@
 #include <boost/multiprecision/gmp.hpp>
 #include "sieve_utils.hpp"
 #include "mining/mining_constants.hpp"
+#include "mining/prime_thresholds.hpp"
 
 namespace nexusminer {
 	namespace cpu
@@ -121,44 +122,37 @@ namespace nexusminer {
 			void set_target_length(int target_length);
 			int  get_target_length() const { return m_target_chain_length; }
 
-			// Stone 6.9.1 / Option 3 — slack between the sieve-time slot filter
-			// and the Fermat-time target.  To realistically catch a length-T
-			// Fermat run we need at least T + slack sieve-survivor slots so
-			// Fermat is allowed to fail in `slack` of them.  Fermat-pass
-			// probability per slot is ~0.14% (≈ 1 / log(2^1024)); to keep the
-			// observed length-T candidate count steady as T grows by one we
-			// must allow one additional Fermat failure:
+			// Sieve-stage filter thresholds.  Both delegate to the shared
+			// single-source-of-truth helpers in mining/prime_thresholds.hpp
+			// so the CPU and GPU paths cannot drift apart.
 			//
-			//     slack(T) = max(1, T - 6)
+			// Two SEPARATELY-NAMED accessors (not one shared `slot_filter_min`)
+			// because the two filters have fundamentally different semantics:
 			//
-			// At T=7 → 1 (preserves pre-Stone-6.9.1 behaviour, matches the
-			// regression baseline pinned by chain_sieve_test).  At T=8 → 2,
-			// T=9 → 3, etc.  A pure constant of 1 (the previous code) caused
-			// a silent throughput cliff every time the network difficulty
-			// stepped up, because the sieve dropped >90% of the candidates
-			// that could have produced a length-T Fermat run.
+			//   * popcount_window_floor() — necessary lower bound on the
+			//     density of a 120-integer sieve window.  A window with fewer
+			//     than T survivors cannot host a length-T chain; this is the
+			//     provably-correct early-exit threshold.  Anything stricter
+			//     would discard windows that could have produced a winner.
 			//
-			// Public so tests and operators can introspect the value without
-			// duplicating the formula.
-			static constexpr int slot_filter_slack(int target_length) noexcept
+			//   * close_chain_min() — minimum sieve-survivor slot count for an
+			//     ASSEMBLED chain candidate to be kept for Fermat testing.
+			//     Same correctness rationale — a chain of exactly T survivors
+			//     where every slot passes Fermat is a winner, so we cannot
+			//     reject it.
+			//
+			// Conflating these two thresholds (as the pre-fix `slot_filter_min`
+			// did) hid PR #672's regression: bumping the close_chain heuristic
+			// also tightened the popcount filter, silently dropping ~90% of
+			// the candidate windows that could have produced length-T chains.
+			// See mining/prime_thresholds.hpp for the full post-mortem.
+			int popcount_window_floor() const noexcept
 			{
-				return target_length > 7 ? target_length - 6 : 1;
+				return mining::popcount_window_floor(m_target_chain_length);
 			}
-
-			// Backward-compat alias for callers that only need the slack at
-			// the current target_length.  Prefer slot_filter_slack(T) in new
-			// code so tests can pin the formula across multiple T values.
-			int slot_filter_slack() const noexcept
+			int close_chain_min() const noexcept
 			{
-				return slot_filter_slack(m_target_chain_length);
-			}
-
-			// Minimum slot count for a chain candidate to be kept by close_chain()
-			// and for find_chains() to consider a 120-integer window worth scanning.
-			// Always >= 2 so a degenerate target_length never disables the filter.
-			int slot_filter_min() const
-			{
-				return std::max(2, m_target_chain_length + slot_filter_slack(m_target_chain_length));
+				return mining::close_chain_min(m_target_chain_length);
 			}
 			void calculate_starting_multiples(const boost::multiprecision::uint1024_t& sieve_start);
 			void calculate_starting_multiples();
@@ -272,6 +266,23 @@ namespace nexusminer {
 			std::atomic<uint64_t> m_diag_chain_candidates_found{0};
 			std::atomic<uint64_t> m_diag_chains_started_fermat{0};
 			std::atomic<uint64_t> m_diag_chains_pushed_long{0};
+
+			// Stone 6.9.2 — popcount-stage funnel observability.  Bumped once
+			// per 4-byte sieve window that survived popcount_window_floor()
+			// (i.e. that the wheel walk in find_chains() actually entered).
+			// Paired with m_diag_chain_candidates_found to give operators
+			// stage-by-stage visibility:
+			//
+			//   popcount_windows_passed  → close_chain stage
+			//   close_chain candidates   → Fermat stage
+			//   chains_pushed_long       → dispatch stage
+			//
+			// A future regression that tightens either filter beyond its
+			// provably-correct lower bound now shows up as a step-down at
+			// the appropriate stage rather than collapsing into the single
+			// "chains_found_by_sieve" counter (which is what let PR #672's
+			// regression go unnoticed for so long).
+			std::atomic<uint64_t> m_diag_popcount_windows_passed{0};
 
 		private:
 			// Stone 6.9 — per-session target Cunningham chain length.  Default

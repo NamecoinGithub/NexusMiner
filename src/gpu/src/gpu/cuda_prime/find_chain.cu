@@ -4,6 +4,7 @@
 #include "find_chain.cuh"
 #include "sieve_lookup_tables.cuh"
 #include "cuda_chain.cuh"
+#include "mining/prime_thresholds.hpp"
 
 #include <stdio.h>
 #include <math.h>
@@ -84,7 +85,11 @@ namespace nexusminer {
                     next_4_bytes |= (((sieve[word + (byte_index >= 1 ? 1 : 0)] >> ((byte_index + 3) % 4) * 8) & 0xFF) << 24);
 
                     int popc = __popc(next_4_bytes);
-                    if (popc < Cuda_sieve::m_min_chain_length)
+                    // Stone 6.9.2 — SSOT for the popcount window floor.
+                    // Equal to Cuda_sieve::m_min_chain_length (=9) today;
+                    // routing through the helper guarantees the GPU and
+                    // CPU paths cannot drift on this gate's semantics.
+                    if (popc < nexusminer::mining::popcount_window_floor(Cuda_sieve::m_min_chain_length))
                         continue;
                 }
 
@@ -134,7 +139,12 @@ namespace nexusminer {
                         
                 }
                 //we reached the end of the chain.  check if it meets the length requirement
-                if (current_chain.m_offset_count >= Cuda_sieve::m_min_chain_length)
+                // Stone 6.9.2 — SSOT for the close_chain quality gate.
+                // Equal to Cuda_sieve::m_min_chain_length (=9) today; the
+                // helper exists so a future operator who tightens this gate
+                // can do so in mining/prime_thresholds.hpp and have CPU and
+                // GPU pick up the change in lockstep.
+                if (current_chain.m_offset_count >= nexusminer::mining::close_chain_min(Cuda_sieve::m_min_chain_length))
                 {
                     //increment the chain list index
                     uint32_t chain_idx = atomicInc(chain_index, Cuda_sieve::m_max_chains);
@@ -153,7 +163,8 @@ namespace nexusminer {
         __device__ void close_chain(const CudaChain& chain, uint32_t* chain_index, CudaChain* chains, uint32_t* chain_count_shared)
         {
             //We reached the end of the chain.  
-            if (chain.m_offset_count >= Cuda_sieve::m_min_chain_length)
+            // Stone 6.9.2 — SSOT close_chain gate (mirrors find_chain_kernel).
+            if (chain.m_offset_count >= nexusminer::mining::close_chain_min(Cuda_sieve::m_min_chain_length))
             {
                 //increment the chain list index
                 uint32_t chain_idx = atomicInc(chain_index, Cuda_sieve::m_max_chains);
@@ -243,17 +254,18 @@ namespace nexusminer {
                         if (first_byte_transition == 0)
                             sieve_word &= 0xFFFFFF00;
                         uint32_t second_byte_transition = sieve_word & 0x000018000;
-                        if (second_byte_transition == 0 && __popc(sieve_word & 0x0000FFFF) < Cuda_sieve::m_min_chain_length)
+                        // Stone 6.9.2 — popcount window floor SSOT.
+                        if (second_byte_transition == 0 && __popc(sieve_word & 0x0000FFFF) < nexusminer::mining::popcount_window_floor(Cuda_sieve::m_min_chain_length))
                             sieve_word &= 0xFFFF0000;
                         uint32_t third_byte_transition = sieve_word & 0x001800000;
-                        if (third_byte_transition == 0 && __popc(sieve_word & 0x00FFFFFF) < Cuda_sieve::m_min_chain_length)
+                        if (third_byte_transition == 0 && __popc(sieve_word & 0x00FFFFFF) < nexusminer::mining::popcount_window_floor(Cuda_sieve::m_min_chain_length))
                             sieve_word &= 0xFF000000;
 
                         //if the last 3 bits are all zero, or the last bit is zero and first bit of the next word is zero, any chain must end at the current word
                         uint32_t word_end = sieve_word & 0xE0000000;
                         bool chain_must_end = (word_end == 0 || (!last_bit_set && !next_word_first_bit_set));
                         int popc = __popc(sieve_word);
-                        if (chain_must_end && popc < Cuda_sieve::m_min_chain_length)
+                        if (chain_must_end && popc < nexusminer::mining::popcount_window_floor(Cuda_sieve::m_min_chain_length))
                             continue;
                         
                     }

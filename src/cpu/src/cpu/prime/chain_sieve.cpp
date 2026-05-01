@@ -467,6 +467,7 @@ namespace nexusminer {
             m_diag_chain_candidates_found.store(0, std::memory_order_relaxed);
             m_diag_chains_started_fermat.store(0, std::memory_order_relaxed);
             m_diag_chains_pushed_long.store(0, std::memory_order_relaxed);
+            m_diag_popcount_windows_passed.store(0, std::memory_order_relaxed);
         }
 
         //search the sieve for chains that meet the minimum length requirement.  Chains can cross segment boundaries.
@@ -496,19 +497,33 @@ namespace nexusminer {
                     pop_count.push(popcnt[sieve[n + 3]]);
                     hits_next_four_bytes += pop_count.back(); 
                 }
-                if (!m_chain_in_process && hits_next_four_bytes < slot_filter_min())
+                if (!m_chain_in_process && hits_next_four_bytes < popcount_window_floor())
                 {
                     //not enough prime candidates in the next 120 numbers to make a long enough chain
 
                 }
-                else if (sieve[n] == 0)
-                {
-                    //no primes in this group of 30.  end the current chain if it is open.
-                    if (m_chain_in_process)
-                        close_chain();
-                }
                 else
                 {
+                    // Stone 6.9.2 — count windows that survived the popcount
+                    // floor (or that we entered because a chain was already
+                    // in progress) so the engine funnel can disambiguate
+                    // popcount-stage drops from close_chain-stage drops.
+                    // Sized as a relaxed atomic increment per byte position;
+                    // amortised cost is negligible vs. the wheel walk that
+                    // follows.
+                    if (!m_chain_in_process)
+                    {
+                        m_diag_popcount_windows_passed.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
+                    if (sieve[n] == 0)
+                    {
+                        //no primes in this group of 30.  end the current chain if it is open.
+                        if (m_chain_in_process)
+                            close_chain();
+                    }
+                    else
+                    {
                     int index_of_highest_set_bit = 0;
                     int sieve_offset = 0;
                     int previous_sieve_offset = 0;
@@ -550,6 +565,7 @@ namespace nexusminer {
                             close_chain();
                         }
                     }
+                    }
                 }
                
             }
@@ -557,16 +573,18 @@ namespace nexusminer {
 
         void Sieve::close_chain()
         {
-            // Stone 6.9.1 / Option 3 — gate on slot_filter_min() (= target_length
-            // + slot_filter_slack(target_length)) rather than target_length itself.
-            // Pre-Stone-6.9 the hard-coded 8 was implicitly providing slack=1 when
-            // the network difficulty implied target=7; dropping that slack in #672
-            // caused chains_found_by_sieve to balloon ~10x and burned ~25-29% of
-            // CPU throughput in Fermat thrash on candidates that could never produce
-            // a length-target Fermat run.  Option 3 makes the slack target-aware so
-            // a difficulty step from 7 → 8 → 9 doesn't silently re-introduce the
-            // same regression at the next wall.
-            if (m_current_chain.length() >= slot_filter_min())
+            // Stone 6.9.2 — gate on close_chain_min() (= target_length, no
+            // slack), the provably-correct minimum sieve-survivor count for a
+            // length-T Fermat run.  See mining/prime_thresholds.hpp for the
+            // post-mortem on PR #672 / Stone 6.9.1, which had bumped this gate
+            // to target+slack(T) AND shared that same threshold with the
+            // popcount window — silently dropping ~90% of the candidates that
+            // could have produced a length-T Fermat run.  The two gates are
+            // now decoupled (popcount_window_floor() vs close_chain_min())
+            // and both pinned at the bare-minimum lower bound; the
+            // close_chain_min() name lets a future operator add a heuristic
+            // tighter than T without touching the popcount filter.
+            if (m_current_chain.length() >= close_chain_min())
             {
                 //we found a chain candidate.  save it.
                 m_chain.push_back(m_current_chain);
