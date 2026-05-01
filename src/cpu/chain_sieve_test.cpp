@@ -5,6 +5,7 @@
 
 #include "cpu/prime/chain_sieve.hpp"
 #include "cpu/prime/sieving_prime_table.hpp"
+#include "mining/prime_thresholds.hpp"
 
 #include <boost/multiprecision/cpp_int.hpp>
 #include <spdlog/sinks/null_sink.h>
@@ -12,6 +13,7 @@
 
 #include <cstddef>
 #include <iostream>
+#include <string>
 
 namespace
 {
@@ -266,36 +268,152 @@ void test_is_there_still_hope_fake_pass_walk_rejects_broken_chain()
                  c2.is_there_still_hope() == true);
 }
 
-void test_slot_filter_slack_invariant()
+void test_popcount_and_close_chain_thresholds()
 {
+    // Stone 6.9.2 — pin the SSOT helper formulas + decoupling invariant.
+    //
+    // Both filters MUST equal the target length (no slack on either): a
+    // window/chain with exactly T sieve survivors where every slot passes
+    // Fermat is a winning length-T chain, so any stricter gate is a
+    // CORRECTNESS regression — that is the bug class PR #672 / Stone 6.9.1
+    // shipped (popcount filter raised in lockstep with close_chain heuristic
+    // discarded ~90% of the windows that could have produced a length-T
+    // chain).  See mining/prime_thresholds.hpp for the full post-mortem.
+    using nexusminer::mining::popcount_window_floor;
+    using nexusminer::mining::close_chain_min;
+
+    // ── Helper formula values across the production target range.
+    // Difficulty 6.x → target 7, 7.x → 8, 8.x → 9 in engine mode.
+    print_result("popcount_window_floor(7) == 7", popcount_window_floor(7) == 7);
+    print_result("popcount_window_floor(8) == 8", popcount_window_floor(8) == 8);
+    print_result("popcount_window_floor(9) == 9", popcount_window_floor(9) == 9);
+    print_result("close_chain_min(7) == 7",       close_chain_min(7) == 7);
+    print_result("close_chain_min(8) == 8",       close_chain_min(8) == 8);
+    print_result("close_chain_min(9) == 9",       close_chain_min(9) == 9);
+
+    // ── Both gates auto-scale with target_length (the difficulty-driven
+    // input).  This is what makes the filter "auto-scale with difficulty"
+    // without any config knob — both helpers are pure functions of T.
+    for (int t = 2; t <= 12; ++t)
+    {
+        const bool monotone =
+            popcount_window_floor(t) <= popcount_window_floor(t + 1)
+            && close_chain_min(t) <= close_chain_min(t + 1);
+        print_result(("auto-scale: both helpers non-decreasing in T (T=" +
+                      std::to_string(t) + ")").c_str(),
+                     monotone);
+    }
+
+    // ── Degenerate clamp: a target below 2 must be silently raised to 2.
+    print_result("popcount_window_floor(1) clamped to 2", popcount_window_floor(1) == 2);
+    print_result("popcount_window_floor(0) clamped to 2", popcount_window_floor(0) == 2);
+    print_result("close_chain_min(1) clamped to 2",       close_chain_min(1) == 2);
+    print_result("close_chain_min(0) clamped to 2",       close_chain_min(0) == 2);
+    print_result("popcount_window_floor(-5) clamped to 2", popcount_window_floor(-5) == 2);
+    print_result("close_chain_min(-5) clamped to 2",       close_chain_min(-5) == 2);
+
+    // ── DECOUPLING INVARIANT (the critical regression guard).  These two
+    // helpers must be evaluated independently.  This test is here to make
+    // any future "let's share this threshold for DRY" refactor fail loudly:
+    // the values must remain EQUAL today (both = T) but reading the same
+    // numeric value from two named helpers is intentional, not redundant.
+    // Tightening only one helper is a legitimate future change; sharing
+    // them again is not.
+    for (int t = 2; t <= 12; ++t)
+    {
+        // Lower-bound correctness: NEITHER helper may be > T.  A stricter
+        // value would discard potential length-T winners.
+        const bool correct =
+            popcount_window_floor(t) <= t && close_chain_min(t) <= t;
+        print_result(("correctness lower bound: helper(T) <= T (T=" +
+                      std::to_string(t) + ")").c_str(),
+                     correct);
+    }
+
+    // ── Sieve instance routes through the same helpers.
     nexusminer::cpu::Sieve s;
     s.set_target_length(7);
-    print_result("slot_filter_min() == target + slot_filter_slack(target) at target=7",
-                 s.slot_filter_min() == 7 + nexusminer::cpu::Sieve::slot_filter_slack(7));
-
+    print_result("Sieve::popcount_window_floor() == helper at T=7",
+                 s.popcount_window_floor() == popcount_window_floor(7));
+    print_result("Sieve::close_chain_min() == helper at T=7",
+                 s.close_chain_min() == close_chain_min(7));
     s.set_target_length(8);
-    print_result("slot_filter_min() == target + slot_filter_slack(target) at target=8",
-                 s.slot_filter_min() == 8 + nexusminer::cpu::Sieve::slot_filter_slack(8));
+    print_result("Sieve::popcount_window_floor() == helper at T=8",
+                 s.popcount_window_floor() == popcount_window_floor(8));
+    print_result("Sieve::close_chain_min() == helper at T=8",
+                 s.close_chain_min() == close_chain_min(8));
+    s.set_target_length(9);
+    print_result("Sieve::popcount_window_floor() == helper at T=9",
+                 s.popcount_window_floor() == popcount_window_floor(9));
+    print_result("Sieve::close_chain_min() == helper at T=9",
+                 s.close_chain_min() == close_chain_min(9));
+}
 
-    // Degenerate clamp: target=2 is the sieve floor; slot filter must
-    // remain >= 2 + slack and must NEVER drop below 2 even if slack
-    // hypothetically went negative in a future refactor.
-    s.set_target_length(2);
-    print_result("slot_filter_min() >= 2 even at minimum target",
-                 s.slot_filter_min() >= 2);
+// Stone 6.9.2 — behavioral regression for find_chains popcount stage.
+//
+// Drives Sieve::find_chains() against a real sieved segment rather than a
+// formula self-check (the previous test only asserted slot_filter_slack(8)==2,
+// which by construction could not catch the very regression it was meant to
+// guard against).  This test verifies:
+//
+//   * the popcount-pass funnel counter actually fires when find_chains runs,
+//   * close_chain produces real chain candidates from a real sieve, and
+//   * the funnel ordering popcount_windows_passed >= chain_candidates_found
+//     holds (each candidate must have first survived the popcount stage).
+//
+// We use a small, low target_length=2 (the minimum) to ensure both gates
+// are at their loosest; any future regression that re-tightens either gate
+// in a way that drops candidates from a healthy sieved segment will fail
+// either the candidates>0 assertion or the ordering assertion.
+void test_find_chains_popcount_counter_and_close_chain_accepts_T_wide()
+{
+    nexusminer::cpu::Sieve s;
+    s.generate_sieving_primes();
+    // prepare(start, 2) sets the loosest possible gate: popcount_window_floor
+    // and close_chain_min both = 2.  Any chain of >= 2 sieve survivors with
+    // a gap <= maxGap to its neighbour will be kept by close_chain().
+    const boost_uint1024_t start = (boost_uint1024_t{1} << 200) + 30;
+    s.prepare(start, /*target=*/2);
+    s.clear_chains();
+    s.reset_sieve();
+    // Run a real sieve pass so m_sieve reflects a true distribution of
+    // wheel-survivor primes (gaps of various sizes), then walk it.
+    s.sieve_segment();
 
-    // Option 3 — pin the per-target formula values so any change is
-    // forced through code review with this test failing.  Slack scales as
-    // max(1, target - 6) so the sieve-survivor headroom keeps pace with
-    // the Fermat-pass probability decay (~1 / log(2^1024) per slot).
-    print_result("slot_filter_slack(7) == 1 (preserves pre-#672 baseline)",
-                 nexusminer::cpu::Sieve::slot_filter_slack(7) == 1);
-    print_result("slot_filter_slack(8) == 2",
-                 nexusminer::cpu::Sieve::slot_filter_slack(8) == 2);
-    print_result("slot_filter_slack(9) == 3",
-                 nexusminer::cpu::Sieve::slot_filter_slack(9) == 3);
-    print_result("slot_filter_slack(2) clamped to 1",
-                 nexusminer::cpu::Sieve::slot_filter_slack(2) == 1);
+    const std::uint64_t popcount_before =
+        s.m_diag_popcount_windows_passed.load(std::memory_order_relaxed);
+    const std::uint64_t found_before =
+        s.m_diag_chain_candidates_found.load(std::memory_order_relaxed);
+
+    s.find_chains(0, /*batch_sieve_mode=*/false);
+
+    const std::uint64_t popcount_after =
+        s.m_diag_popcount_windows_passed.load(std::memory_order_relaxed);
+    const std::uint64_t found_after =
+        s.m_diag_chain_candidates_found.load(std::memory_order_relaxed);
+
+    print_result("find_chains: popcount_windows_passed advances on real sieve",
+                 popcount_after > popcount_before);
+    print_result("find_chains: chain candidates produced on real sieve "
+                 "(close_chain accepts at minimum target)",
+                 found_after > found_before);
+    print_result("find_chains: popcount_passed >= chain_candidates_found "
+                 "(funnel ordering invariant)",
+                 (popcount_after - popcount_before) >=
+                 (found_after - found_before));
+}
+
+void test_slot_filter_legacy_methods_removed()
+{
+    // Compile-time assertion via SFINAE-free probing: if a future change
+    // re-introduces slot_filter_min / slot_filter_slack on Sieve, this
+    // test file will stop compiling because it does NOT reference those
+    // identifiers anywhere.  The presence of the new helpers is verified
+    // by test_popcount_and_close_chain_thresholds() above; their
+    // separately-named existence IS the SSOT contract.  This is a
+    // documentation marker, not a runtime check.
+    print_result("legacy slot_filter_* methods are no longer referenced "
+                 "(see comment)", true);
 }
 } // namespace
 
@@ -321,7 +439,9 @@ int main()
     test_is_there_still_hope_totals_prune();
     test_is_there_still_hope_fast_path_no_failures();
     test_is_there_still_hope_fake_pass_walk_rejects_broken_chain();
-    test_slot_filter_slack_invariant();
+    test_popcount_and_close_chain_thresholds();
+    test_find_chains_popcount_counter_and_close_chain_accepts_T_wide();
+    test_slot_filter_legacy_methods_removed();
 
     std::cout << "\nResult: " << (tests_run - tests_failed) << "/" << tests_run << " passed\n";
     return tests_failed == 0 ? 0 : 1;

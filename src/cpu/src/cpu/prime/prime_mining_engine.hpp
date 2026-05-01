@@ -283,6 +283,11 @@ public:
         // Stone 6.9 — find→test→dispatch funnel snapshot.
         std::uint64_t chains_found_by_sieve{0};
         std::uint64_t chains_pushed_long{0};
+        // Stone 6.9.2 — popcount-stage funnel counter.  Always >=
+        // chains_found_by_sieve in a healthy run; a sudden drop in the
+        // ratio chains_found_by_sieve / popcount_windows_passed is the
+        // smoking gun for a future close_chain regression.
+        std::uint64_t popcount_windows_passed{0};
         std::uint64_t validate_attempts{0};
         std::uint64_t validate_rejected_base_not_prime{0};
         std::uint64_t validate_rejected_below_diff{0};
@@ -367,6 +372,8 @@ private:
     // ordering; read by the stats logger / Engine_stats_snapshot.
     std::atomic<std::uint64_t>             m_chains_found_by_sieve{0};
     std::atomic<std::uint64_t>             m_chains_pushed_long{0};
+    // Stone 6.9.2 — popcount-stage funnel counter (see Engine_stats_snapshot).
+    std::atomic<std::uint64_t>             m_popcount_windows_passed{0};
     std::atomic<std::uint64_t>             m_validate_attempts{0};
     std::atomic<std::uint64_t>             m_validate_rejected_base_not_prime{0};
     std::atomic<std::uint64_t>             m_validate_rejected_below_diff{0};

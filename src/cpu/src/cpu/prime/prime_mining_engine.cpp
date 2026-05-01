@@ -213,6 +213,8 @@ PrimeMiningEngine::Engine_stats_snapshot PrimeMiningEngine::snapshot_stats() con
     snap.candidates_dispatched = m_candidates_dispatched.load(std::memory_order_relaxed);
     snap.chains_found_by_sieve = m_chains_found_by_sieve.load(std::memory_order_relaxed);
     snap.chains_pushed_long    = m_chains_pushed_long.load(std::memory_order_relaxed);
+    snap.popcount_windows_passed =
+        m_popcount_windows_passed.load(std::memory_order_relaxed);
     snap.validate_attempts     = m_validate_attempts.load(std::memory_order_relaxed);
     snap.validate_rejected_base_not_prime =
         m_validate_rejected_base_not_prime.load(std::memory_order_relaxed);
@@ -539,10 +541,12 @@ void PrimeMiningEngine::run_stats_logger()
         // or (c) the network-difficulty gate silently rejecting otherwise-
         // valid candidates (validate_rejected_below_diff dominant).
         m_logger->info("[PrimeMiningEngine] funnel: "
+                       "popcount_windows_passed={} "
                        "chains_found_by_sieve={} chains_pushed_long={} "
                        "validate_attempts={} "
                        "rejected_base_not_prime={} rejected_below_diff={} "
                        "rejected_malformed={}",
+                       snap.popcount_windows_passed,
                        snap.chains_found_by_sieve,
                        snap.chains_pushed_long,
                        snap.validate_attempts,
@@ -645,6 +649,29 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     std::ceil(required_difficulty));
                 if (target_length < 2) target_length = 2;
 
+                // Stone 6.9.2 — observability for difficulty-driven gate
+                // changes.  Logged at INFO with a stable, greppable prefix
+                // so operators can correlate any throughput step-change
+                // with the underlying target_length transition (the
+                // popcount/close_chain thresholds both auto-scale with
+                // target_length via mining/prime_thresholds.hpp).  Logged
+                // only when the value actually changes, and only when this
+                // pool thread had a previous bound session — initial bind
+                // is implicit in pool startup and would just be noise.
+                if (sieve && bound_session
+                    && sieve->get_target_length() != target_length
+                    && m_logger)
+                {
+                    m_logger->info("[PrimeMiningEngine] pool[{}] target_length "
+                                   "{} -> {} (nbits={}, difficulty={:.2f}, "
+                                   "popcount_floor={}, close_chain_min={})",
+                                   pool_index,
+                                   sieve->get_target_length(), target_length,
+                                   session->nbits, required_difficulty,
+                                   nexusminer::mining::popcount_window_floor(target_length),
+                                   nexusminer::mining::close_chain_min(target_length));
+                }
+
                 if (sieve)
                 {
                     const uint1k startprime = my_base_hash + session->starting_nonce;
@@ -736,12 +763,16 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                         sieve->m_diag_chain_candidates_found.load(std::memory_order_relaxed);
                     const std::uint64_t pushed_before =
                         sieve->m_diag_chains_pushed_long.load(std::memory_order_relaxed);
+                    const std::uint64_t popcount_before =
+                        sieve->m_diag_popcount_windows_passed.load(std::memory_order_relaxed);
                     sieve->find_chains(low, false);
                     sieve->test_chains(local_sieve_start);
                     const std::uint64_t found_after =
                         sieve->m_diag_chain_candidates_found.load(std::memory_order_relaxed);
                     const std::uint64_t pushed_after =
                         sieve->m_diag_chains_pushed_long.load(std::memory_order_relaxed);
+                    const std::uint64_t popcount_after =
+                        sieve->m_diag_popcount_windows_passed.load(std::memory_order_relaxed);
                     if (found_after > found_before)
                     {
                         m_chains_found_by_sieve.fetch_add(found_after - found_before,
@@ -751,6 +782,12 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     {
                         m_chains_pushed_long.fetch_add(pushed_after - pushed_before,
                                                        std::memory_order_relaxed);
+                    }
+                    if (popcount_after > popcount_before)
+                    {
+                        m_popcount_windows_passed.fetch_add(
+                            popcount_after - popcount_before,
+                            std::memory_order_relaxed);
                     }
                     segment_chain_offsets = sieve->m_long_chain_starts;
                 }
