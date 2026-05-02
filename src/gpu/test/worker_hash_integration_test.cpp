@@ -142,9 +142,8 @@ nexusminer::Block_data make_block(std::uint64_t starting_nonce)
 {
     nexusminer::Block_data blk{};
     blk.nNonce = starting_nonce;
-    // The static_assert in worker_hash.cpp ensures nNonce aliases TheData[26].
-    // Verify the aliasing here too so a miscompile fails fast.
-    assert(reinterpret_cast<std::uint64_t*>(&blk.nVersion)[26] == starting_nonce);
+    // Verify the aliasing: &blk.nNonce must equal &((uint64_t*)&blk.nVersion)[26]
+    assert(reinterpret_cast<std::uint64_t*>(&blk.nVersion) + 26 == reinterpret_cast<std::uint64_t*>(&blk.nNonce));
     return blk;
 }
 
