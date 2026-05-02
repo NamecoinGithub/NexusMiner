@@ -27,6 +27,12 @@ to `g5.xlarge`, also bump the workflow's `CMAKE_CUDA_ARCHITECTURES` to
    - Storage: 50 GB gp3 (CUDA toolkit + CPM cache fit comfortably)
    - IAM role: needs `ec2:TerminateInstances` on `self` (so the budget
      guard in cloud-init.yaml can self-terminate after 2h idle)
+   - **Launch template `MetadataOptions`**: set
+     `HttpTokens: required, HttpPutResponseHopLimit: 2`.
+     This enforces IMDSv2 on the instance and is required because
+     `cloud-init.yaml` uses IMDSv2 token-based metadata fetches.
+     A self-hosted runner that executes PR code is an SSRF target; IMDSv2
+     prevents PR code from stealing IAM credentials via the metadata API.
    - User data: paste `cloud-init.yaml`, then in the same field, set the
      three required env vars at the very top **before** the `#cloud-config`
      line, e.g.:
@@ -49,12 +55,21 @@ to `g5.xlarge`, also bump the workflow's `CMAKE_CUDA_ARCHITECTURES` to
 
 ## Why these specific guardrails
 
-The `runner-budget-guard` cron + the `actions-runner-shutdown.service`
-unit exist because **the most expensive failure mode for a self-hosted
-runner is a stuck or orphaned one** — not a hot build.  A wedged build
-that takes 45 minutes costs ~$0.12; a runner that drains 24h of idle
-spot time before someone notices costs ~$4.  The two guardrails together
-cap the worst case at ~$0.32 (2h spot + termination).
+The `runner-budget-guard` cron exists because **the most expensive failure mode
+for a self-hosted runner is a stuck or orphaned one** — not a hot build.  A
+wedged build that takes 45 minutes costs ~$0.12; a runner that drains 24h of
+idle spot time before someone notices costs ~$4.  The budget guard caps the
+worst case at ~$0.32 (2h spot + termination).
+
+Note: the `actions-runner-shutdown.service` that was described in earlier
+versions of this file has been **removed** because it relied on a placeholder
+removal token (`config.sh remove --token placeholder`) that always failed,
+leaving "offline" ghost runners in the GitHub UI for ~24h after every spot
+interruption.  A proper fix requires a PAT or JIT remove-token stored securely
+(e.g. AWS Secrets Manager / SSM Parameter Store) — see the PR #682 review for
+the design sketch.  Until that wiring is in place, orphaned runners expire
+automatically after 24h, which is acceptable given the budget guard already
+covers the cost risk.
 
 ## Trust boundary
 

@@ -51,6 +51,19 @@
       }
     },
     {
+      "name": "gpu-host-stubs",
+      "displayName": "GPU host-side code (stubbed kernel, no CUDA toolchain required)",
+      "description": "Builds the host portions of src/gpu/worker_hash.cpp against a stub cuda_sk1024_hash so contributors without nvcc can validate snapshot/contract/static_assert changes",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gpu-host-stubs",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WITH_GPU_CUDA": "OFF",
+        "WITH_GPU_HOST_STUBS": "ON",
+        "WITH_PRIME": "OFF"
+      }
+    },
+    {
       "name": "tsan",
       "displayName": "ThreadSanitizer",
       "description": "Debug build with ThreadSanitizer",
@@ -126,6 +139,10 @@
       "configurePreset": "gpu-cuda-prime"
     },
     {
+      "name": "gpu-host-stubs",
+      "configurePreset": "gpu-host-stubs"
+    },
+    {
       "name": "tsan",
       "configurePreset": "tsan"
     },
@@ -161,6 +178,13 @@
     {
       "name": "gpu-cuda-prime",
       "configurePreset": "gpu-cuda-prime",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gpu-host-stubs",
+      "configurePreset": "gpu-host-stubs",
       "output": {
         "outputOnFailure": true
       }
