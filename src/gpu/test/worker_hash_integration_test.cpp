@@ -324,13 +324,14 @@ void test_positive_winner_dispatch_and_stats()
     const std::uint32_t tpb = 256;
     const std::uint32_t dev = 0;
     constexpr std::uint64_t starting_nonce = 0xBBBB'0000'0000'0000ull;
-    constexpr std::uint64_t clobber_nonce  = 0xCCCC'0000'0000'0000ull;
+    constexpr std::uint64_t post_winner_sentinel_nonce = 0xCCCC'0000'0000'0000ull;
+    constexpr std::uint16_t kInvalidWorkerId = 0xFFFFu;
 
     nexusminer::Block_data local_block = make_block(starting_nonce);
     uint1024_t local_target{};
 
     std::optional<nexusminer::Block_data> callback_block;
-    std::uint16_t callback_worker_id = 0xFFFFu;
+    std::uint16_t callback_worker_id = kInvalidWorkerId;
     TA::set_found_nonce_callback(*worker,
         [&](std::uint16_t worker_id, std::unique_ptr<nexusminer::Block_data> block)
         {
@@ -353,7 +354,7 @@ void test_positive_winner_dispatch_and_stats()
 
     // Regression guard for async dispatch: the posted callback must carry the
     // immutable winning block snapshot, not read later mutable m_block state.
-    TA::clobber_canonical_nonce(*worker, clobber_nonce);
+    TA::clobber_canonical_nonce(*worker, post_winner_sentinel_nonce);
     io->run();
 
     check(callback_worker_id == 0,

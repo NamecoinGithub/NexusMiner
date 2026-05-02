@@ -462,9 +462,12 @@ bool Worker_hash::step_once(Block_data& local_block,
         // snapshot — local_block already has the correct nVersion etc).
         uint1024_t hash_proof = LLC::SK1024(BEGIN(local_block.nVersion), END(local_block.nNonce));
         std::uint32_t leading_zeros = 1024 - hash_proof.BitCount();
-        if (leading_zeros > static_cast<std::uint32_t>(m_best_leading_zeros.load(std::memory_order_relaxed)))
+        int current_best = m_best_leading_zeros.load(std::memory_order_relaxed);
+        const int new_best = static_cast<int>(leading_zeros);
+        while (new_best > current_best &&
+               !m_best_leading_zeros.compare_exchange_weak(
+                   current_best, new_best, std::memory_order_relaxed))
         {
-            m_best_leading_zeros.store(static_cast<int>(leading_zeros), std::memory_order_relaxed);
         }
 
         if (found_nonce_callback)

@@ -45,7 +45,7 @@ void install_null_logger()
 nexusminer::config::Worker_config make_gpu_prime_worker_config()
 {
     nexusminer::config::Worker_config cfg;
-    cfg.m_id = "prime-stub-test";
+    cfg.m_id = "prime-test-worker";
     cfg.m_internal_id = 0;
     cfg.m_mode = nexusminer::config::Worker_mode::GPU;
     cfg.m_worker_mode = nexusminer::config::Worker_config_gpu{};
