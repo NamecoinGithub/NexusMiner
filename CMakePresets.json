@@ -53,7 +53,7 @@
     {
       "name": "gpu-host-stubs",
       "displayName": "GPU host-side code (stubbed kernel, no CUDA toolchain required)",
-      "description": "Builds the host portions of src/gpu/worker_hash.cpp against a stub cuda_sk1024_hash so contributors without nvcc can validate snapshot/contract/static_assert changes",
+      "description": "Builds the host portions of GPU hash and prime workers against stub CUDA boundaries so contributors without nvcc can validate snapshot/contract/static_assert changes",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/gpu-host-stubs",
       "cacheVariables": {

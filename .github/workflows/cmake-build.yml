@@ -76,7 +76,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev
+          sudo apt-get install -y libssl-dev libboost-all-dev
 
       - name: Install OpenSSL (macOS)
         if: runner.os == 'macOS'

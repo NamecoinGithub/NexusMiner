@@ -7,7 +7,6 @@
 #include "prime/sieve.hpp"
 #include "block.hpp"
 #include <asio.hpp>
-#include <primesieve.hpp>
 #include <cassert>
 #include <cmath>
 #include <cstring>

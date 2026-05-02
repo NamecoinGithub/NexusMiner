@@ -85,8 +85,8 @@ private:
     std::uint32_t m_intensity;
     std::uint32_t m_throughput;
     std::uint32_t m_threads_per_block;
-    int m_best_leading_zeros;
-    int m_met_difficulty_count;
+    std::atomic<int> m_best_leading_zeros;
+    std::atomic<int> m_met_difficulty_count;
 
     // Stone — bug #7 fix: per-worker nonce sharding.
     // Worker_prime carefully shards via (m_internal_id << 48); CPU worker_hash

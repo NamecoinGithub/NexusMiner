@@ -441,33 +441,41 @@ bool Worker_hash::step_once(Block_data& local_block,
         m_keccak_mismatch_count.store(0, std::memory_order_relaxed);
 
         ++m_met_difficulty_count;
-        // Copy the winning nonce back into the canonical m_block so
-        // the dispatch callback (and any future stats reader) sees a
-        // coherent block.  Lock-protected because publish_statistics
-        // / set_block may also touch m_block.  PR #681 follow-up:
+        // Copy the winning nonce back into the canonical m_block, and snapshot
+        // both the callback and winning block while holding the lock.  The
+        // asio callback can run after new work arrives; it must submit the
+        // block that actually won, not later mutable worker state.
+        Worker::Block_found_handler found_nonce_callback;
+        Block_data found_block;
+        // Lock-protected because publish_statistics / set_block may also touch
+        // m_block.  PR #681 follow-up:
         // local_block.nNonce already holds the winning nonce because
         // cuda_sk1024_hash sets `TheNonce = foundNonce` (sk1024.cu:796)
         // and TheNonce now aliases local_block.nNonce.
         {
             std::scoped_lock<std::mutex> lck(m_mtx);
             m_block.nNonce = local_block.nNonce;
+            found_block = m_block;
+            found_nonce_callback = m_found_nonce_callback;
         }
         // Calculate the number of leading zero-bits (use the local
         // snapshot — local_block already has the correct nVersion etc).
         uint1024_t hash_proof = LLC::SK1024(BEGIN(local_block.nVersion), END(local_block.nNonce));
         std::uint32_t leading_zeros = 1024 - hash_proof.BitCount();
-        if (leading_zeros > m_best_leading_zeros)
+        if (leading_zeros > static_cast<std::uint32_t>(m_best_leading_zeros.load(std::memory_order_relaxed)))
         {
-            m_best_leading_zeros = leading_zeros;
+            m_best_leading_zeros.store(static_cast<int>(leading_zeros), std::memory_order_relaxed);
         }
 
-        if (m_found_nonce_callback)
+        if (found_nonce_callback)
         {
             m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
-            ::asio::post(*m_io_context, [self = shared_from_this()]()
+            ::asio::post(*m_io_context,
+                [callback = std::move(found_nonce_callback),
+                 internal_id = m_config.m_internal_id,
+                 block = std::move(found_block)]() mutable
             {
-                self->m_found_nonce_callback(self->m_config.m_internal_id,
-                    std::make_unique<Block_data>(self->m_block));
+                callback(internal_id, std::make_unique<Block_data>(block));
             });
         }
         else
@@ -491,8 +499,8 @@ void Worker_hash::update_statistics(stats::Collector& stats_collector)
     // atomic from the writer's POV — no chance of double-counting hashes
     // posted between the read and the reset.
     hash_stats.m_hash_count += m_hashes.exchange(0, std::memory_order_relaxed);
-    hash_stats.m_best_leading_zeros = m_best_leading_zeros;
-    hash_stats.m_met_difficulty_count = m_met_difficulty_count;
+    hash_stats.m_best_leading_zeros = m_best_leading_zeros.load(std::memory_order_relaxed);
+    hash_stats.m_met_difficulty_count = m_met_difficulty_count.load(std::memory_order_relaxed);
 
     typed.update_worker_stats(m_config.m_internal_id, hash_stats);
 }
