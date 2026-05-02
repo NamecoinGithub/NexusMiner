@@ -26,6 +26,7 @@ link_directories(${CMAKE_SOURCE_DIR}/libs)
 
 option(WITH_GPU_AMD "Build with AMD gpu workers, Requires HIP and clang" OFF)
 option(WITH_GPU_CUDA "Build with Nvidia gpu workers, CUDA needed" OFF)
+option(WITH_GPU_HOST_STUBS "Build gpu/worker_hash.cpp against stub CUDA functions (no CUDA toolchain required); mutually exclusive with WITH_GPU_CUDA" OFF)
 option(WITH_PRIME "Build with PRIME mining support, BOOST and GMP or MPIR needed" OFF)
 
 # Default OFF for macOS (Homebrew OpenSSL is typically dynamic)
@@ -197,11 +198,12 @@ add_subdirectory(src/TAO)
 add_subdirectory(src/tools)
 
 
-if(WITH_GPU_CUDA OR WITH_GPU_AMD OR WITH_PRIME)
+if(WITH_GPU_CUDA OR WITH_GPU_AMD OR WITH_PRIME OR WITH_GPU_HOST_STUBS)
     # Stone — also enter src/gpu when WITH_PRIME=ON (without GPU) so the
     # host-runnable GPU unit tests under that subdirectory build and run on
     # CPU-only CI.  The actual `gpu` static library remains gated on
-    # WITH_GPU_CUDA / WITH_GPU_AMD inside src/gpu/CMakeLists.txt itself.
+    # WITH_GPU_CUDA / WITH_GPU_AMD / WITH_GPU_HOST_STUBS inside
+    # src/gpu/CMakeLists.txt itself.
     add_subdirectory(src/gpu)
 endif()
 

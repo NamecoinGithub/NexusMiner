@@ -64,23 +64,14 @@ packages:
   - awscli
 
 write_files:
-  - path: /etc/systemd/system/actions-runner-shutdown.service
-    permissions: '0644'
-    content: |
-      # Cleanly de-register the GitHub runner on shutdown so spot
-      # interruption does not leave an "offline" runner in the UI.
-      [Unit]
-      Description=De-register GitHub Actions runner on shutdown
-      DefaultDependencies=no
-      Before=shutdown.target reboot.target halt.target
-      [Service]
-      Type=oneshot
-      RemainAfterExit=true
-      ExecStart=/bin/true
-      ExecStop=/opt/actions-runner/config.sh remove --token "$(cat /opt/actions-runner/.removal-token 2>/dev/null || echo placeholder)"
-      TimeoutStopSec=60
-      [Install]
-      WantedBy=shutdown.target
+  # TODO: Clean de-registration on shutdown — proper fix requires a PAT
+  # (or JIT token via GitHub remove-token API) stored in AWS Secrets Manager
+  # / SSM Parameter Store so the runner can call `config.sh remove --token`
+  # with a live credential.  See PR #682 review for the full design sketch.
+  # The broken `actions-runner-shutdown.service` that used a placeholder token
+  # has been removed: `config.sh remove --token placeholder` always fails and
+  # left "offline" ghost runners in the UI for ~24h after every spot
+  # interruption.  The `runner-budget-guard` cron covers the real cost concern.
 
   - path: /usr/local/sbin/runner-budget-guard
     permissions: '0755'
@@ -89,6 +80,9 @@ write_files:
       # PR #681 follow-up §1 — terminate this instance if it is up for
       # >2h with no active GitHub Actions job.  Run from cron every 5 min.
       # Belt-and-suspenders against a stuck runner draining the budget.
+      #
+      # IMDSv2: all metadata fetches use a short-lived token to defend
+      # against SSRF attacks from PR code running on this runner.
       set -euo pipefail
       UPTIME_SEC=$(awk '{print int($1)}' /proc/uptime)
       MIN_UPTIME=$((2 * 3600))
@@ -98,9 +92,19 @@ write_files:
       # match, which we treat as "idle for too long → terminate".
       if pgrep -f Runner.Worker > /dev/null; then exit 0; fi
       logger -t runner-budget-guard "idle >2h, terminating instance"
-      INSTANCE_ID=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/instance-id || true)
-      REGION=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/placement/region || true)
-      if [ -n "$INSTANCE_ID" ] && [ -n "$REGION" ]; then
+      # IMDSv2: obtain a short-lived token (TTL=60s) before querying metadata.
+      TOKEN=$(curl -fsSL -X PUT \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+        http://169.254.169.254/latest/api/token 2>/dev/null || true)
+      if [ -n "$TOKEN" ]; then
+        INSTANCE_ID=$(curl -fsSL \
+          -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+          http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || true)
+        REGION=$(curl -fsSL \
+          -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+          http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+      fi
+      if [ -n "${INSTANCE_ID:-}" ] && [ -n "${REGION:-}" ]; then
         aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" || true
       else
         # Fallback for non-AWS hosts: just power off; bring-up is manual.
@@ -140,7 +144,17 @@ runcmd:
     # one-line cloud-init edit instead of an AMI rebake).
     : "${RUNNER_REPO_URL:?Set RUNNER_REPO_URL via instance user-data env}"
     : "${RUNNER_REGISTRATION_TOKEN:?Set RUNNER_REGISTRATION_TOKEN via instance user-data env}"
-    INSTANCE_ID=$(curl -s --max-time 5 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || hostname)
+    # IMDSv2: obtain a short-lived token before querying instance metadata.
+    IMDS_TOKEN=$(curl -fsSL -X PUT \
+      -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+      http://169.254.169.254/latest/api/token 2>/dev/null || true)
+    if [ -n "$IMDS_TOKEN" ]; then
+      INSTANCE_ID=$(curl -fsSL \
+        -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+        http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || hostname)
+    else
+      INSTANCE_ID=$(hostname)
+    fi
     : "${RUNNER_NAME:=nexusminer-cuda-${INSTANCE_ID}}"
     mkdir -p /opt/actions-runner
     cd /opt/actions-runner
@@ -162,7 +176,5 @@ runcmd:
     ./svc.sh install runner
     ./svc.sh start
 
-  # ---- 3. Enable shutdown de-register + budget guard -------------------
+  # ---- 3. Enable budget guard (shutdown de-register service removed) -----
   - systemctl daemon-reload
-  - systemctl enable actions-runner-shutdown.service
-  - systemctl start actions-runner-shutdown.service

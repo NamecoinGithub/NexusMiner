@@ -345,106 +345,11 @@ void Worker_hash::run()
                 }
             }
 
-            std::uint64_t hashes = 0;
-            // Stone — bug #8 fix: surface keccak (CPU revalidation) mismatches
-            // to the worker so we can route them through spdlog and treat
-            // repeated mismatches as a hardware fault.  Counter is delta per
-            // call; cuda_sk1024_hash adds 1 on each mismatch.
-            std::uint32_t keccak_mismatch_delta = 0;
-
-            // Do hashing on a CUDA device.  All inputs are local snapshots so
-            // a concurrent set_block() cannot tear them mid-kernel.  We pass
-            // local_block.nNonce by-reference (see snapshot-block comment
-            // above for the kernel-contract rationale) so the kernel's
-            // "advance TheData[26], leave TheNonce alone on miss" semantics
-            // remain coherent across iterations.
-            bool found = cuda_sk1024_hash(
-                local_device_id,
-                reinterpret_cast<uint32_t*>(&local_block.nVersion),
-                local_target,
-                local_block.nNonce,
-                &hashes,
-                local_throughput,
-                local_threads_per_block,
-                local_block.nHeight,
-                &keccak_mismatch_delta);
-
-            m_hashes.fetch_add(hashes, std::memory_order_relaxed);
-
-            // Stone — bug #8 fix: handle keccak mismatches.  These represent
-            // a GPU that returned a "winner" the host could not revalidate —
-            // a hardware-fault signal (bit-flip / marginal clocks / thermal).
-            if (keccak_mismatch_delta > 0)
+            if (step_once(local_block, local_target,
+                          local_throughput, local_threads_per_block,
+                          local_device_id))
             {
-                m_keccak_mismatch_total.fetch_add(keccak_mismatch_delta,
-                                                  std::memory_order_relaxed);
-                const auto consec = m_keccak_mismatch_count.fetch_add(
-                    keccak_mismatch_delta, std::memory_order_relaxed)
-                    + keccak_mismatch_delta;
-                m_logger->warn(spdlog::fmt_lib::runtime(
-                    m_log_leader +
-                    "GPU keccak (CPU-revalidation) mismatch: "
-                    "consecutive={} total={} threshold={} — possible hardware fault"),
-                    consec,
-                    m_keccak_mismatch_total.load(std::memory_order_relaxed),
-                    kKeccakMismatchFaultThreshold);
-                if (consec >= kKeccakMismatchFaultThreshold)
-                {
-                    m_logger->error(spdlog::fmt_lib::runtime(
-                        m_log_leader +
-                        "Keccak mismatch fault threshold reached "
-                        "({} consecutive); marking worker offline. "
-                        "Operator action required."),
-                        consec);
-                    m_running = false;
-                    m_stop = true;
-                    break;
-                }
-            }
-
-            // If a nonce with the right diffulty was found submit block.
-            if (found && !m_stop.load())
-            {
-                // Stone — bug #8 fix: a healthy submission resets the
-                // consecutive-mismatch counter.
-                m_keccak_mismatch_count.store(0, std::memory_order_relaxed);
-
-                ++m_met_difficulty_count;
-                // Copy the winning nonce back into the canonical m_block so
-                // the dispatch callback (and any future stats reader) sees a
-                // coherent block.  Lock-protected because publish_statistics
-                // / set_block may also touch m_block.  PR #681 follow-up:
-                // local_block.nNonce already holds the winning nonce because
-                // cuda_sk1024_hash sets `TheNonce = foundNonce` (sk1024.cu:796)
-                // and TheNonce now aliases local_block.nNonce.
-                {
-                    std::scoped_lock<std::mutex> lck(m_mtx);
-                    m_block.nNonce = local_block.nNonce;
-                }
-                // Calculate the number of leading zero-bits (use the local
-                // snapshot — local_block already has the correct nVersion etc).
-                uint1024_t hash_proof = LLC::SK1024(BEGIN(local_block.nVersion), END(local_block.nNonce));
-                std::uint32_t leading_zeros = 1024 - hash_proof.BitCount();
-                if (leading_zeros > m_best_leading_zeros)
-                {
-                    m_best_leading_zeros = leading_zeros;
-                }
-
-                if (m_found_nonce_callback)
-                {
-                    m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
-                    ::asio::post(*m_io_context, [self = shared_from_this()]()
-                    {
-                        self->m_found_nonce_callback(self->m_config.m_internal_id,
-                            std::make_unique<Block_data>(self->m_block));
-                    });
-                }
-                else
-                {
-                    m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
-                }
-
-                m_stop = true;
+                break;
             }
         }
 
@@ -453,9 +358,135 @@ void Worker_hash::run()
 }
 
 
+// step_once — inner-loop body, extracted for deterministic testing.
+// Calls cuda_sk1024_hash once with the provided snapshot state, accumulates
+// hashes into m_hashes, handles keccak-mismatch accounting, and dispatches
+// a found-block callback on a credited winner.
+//
+// Returns true when the caller should break the mining loop:
+//   - keccak-mismatch fault threshold reached (m_running set to false), OR
+//   - a real winner was found and the callback dispatched.
+// Returns false to continue mining.
+//
+// Precondition: local_block.nNonce == ((uint64_t*)&local_block.nVersion)[26]
+// (the static_assert at the top of this file locks that invariant).
+bool Worker_hash::step_once(Block_data& local_block,
+                             const uint1024_t& local_target,
+                             std::uint32_t local_throughput,
+                             std::uint32_t local_threads_per_block,
+                             std::uint32_t local_device_id)
+{
+    std::uint64_t hashes = 0;
+    // Stone — bug #8 fix: surface keccak (CPU revalidation) mismatches
+    // to the worker so we can route them through spdlog and treat
+    // repeated mismatches as a hardware fault.  Counter is delta per
+    // call; cuda_sk1024_hash adds 1 on each mismatch.
+    std::uint32_t keccak_mismatch_delta = 0;
+
+    // Do hashing on a CUDA device.  All inputs are local snapshots so
+    // a concurrent set_block() cannot tear them mid-kernel.  We pass
+    // local_block.nNonce by-reference (see snapshot-block comment
+    // above for the kernel-contract rationale) so the kernel's
+    // "advance TheData[26], leave TheNonce alone on miss" semantics
+    // remain coherent across iterations.
+    bool found = cuda_sk1024_hash(
+        local_device_id,
+        reinterpret_cast<uint32_t*>(&local_block.nVersion),
+        local_target,
+        local_block.nNonce,
+        &hashes,
+        local_throughput,
+        local_threads_per_block,
+        local_block.nHeight,
+        &keccak_mismatch_delta);
+
+    m_hashes.fetch_add(hashes, std::memory_order_relaxed);
+
+    // Stone — bug #8 fix: handle keccak mismatches.  These represent
+    // a GPU that returned a "winner" the host could not revalidate —
+    // a hardware-fault signal (bit-flip / marginal clocks / thermal).
+    if (keccak_mismatch_delta > 0)
+    {
+        m_keccak_mismatch_total.fetch_add(keccak_mismatch_delta,
+                                          std::memory_order_relaxed);
+        const auto consec = m_keccak_mismatch_count.fetch_add(
+            keccak_mismatch_delta, std::memory_order_relaxed)
+            + keccak_mismatch_delta;
+        m_logger->warn(spdlog::fmt_lib::runtime(
+            m_log_leader +
+            "GPU keccak (CPU-revalidation) mismatch: "
+            "consecutive={} total={} threshold={} — possible hardware fault"),
+            consec,
+            m_keccak_mismatch_total.load(std::memory_order_relaxed),
+            kKeccakMismatchFaultThreshold);
+        if (consec >= kKeccakMismatchFaultThreshold)
+        {
+            m_logger->error(spdlog::fmt_lib::runtime(
+                m_log_leader +
+                "Keccak mismatch fault threshold reached "
+                "({} consecutive); marking worker offline. "
+                "Operator action required."),
+                consec);
+            m_running = false;
+            m_stop = true;
+            return true;  // caller should break
+        }
+    }
+
+    // If a nonce with the right difficulty was found submit block.
+    if (found && !m_stop.load())
+    {
+        // Stone — bug #8 fix: a healthy submission resets the
+        // consecutive-mismatch counter.
+        m_keccak_mismatch_count.store(0, std::memory_order_relaxed);
+
+        ++m_met_difficulty_count;
+        // Copy the winning nonce back into the canonical m_block so
+        // the dispatch callback (and any future stats reader) sees a
+        // coherent block.  Lock-protected because publish_statistics
+        // / set_block may also touch m_block.  PR #681 follow-up:
+        // local_block.nNonce already holds the winning nonce because
+        // cuda_sk1024_hash sets `TheNonce = foundNonce` (sk1024.cu:796)
+        // and TheNonce now aliases local_block.nNonce.
+        {
+            std::scoped_lock<std::mutex> lck(m_mtx);
+            m_block.nNonce = local_block.nNonce;
+        }
+        // Calculate the number of leading zero-bits (use the local
+        // snapshot — local_block already has the correct nVersion etc).
+        uint1024_t hash_proof = LLC::SK1024(BEGIN(local_block.nVersion), END(local_block.nNonce));
+        std::uint32_t leading_zeros = 1024 - hash_proof.BitCount();
+        if (leading_zeros > m_best_leading_zeros)
+        {
+            m_best_leading_zeros = leading_zeros;
+        }
+
+        if (m_found_nonce_callback)
+        {
+            m_logger->info(spdlog::fmt_lib::runtime(m_log_leader + "💎 Block found! Posting to main io_context..."));
+            ::asio::post(*m_io_context, [self = shared_from_this()]()
+            {
+                self->m_found_nonce_callback(self->m_config.m_internal_id,
+                    std::make_unique<Block_data>(self->m_block));
+            });
+        }
+        else
+        {
+            m_logger->debug(spdlog::fmt_lib::runtime(m_log_leader + "Miner callback function not set."));
+        }
+
+        m_stop = true;
+        return true;  // caller should break
+    }
+
+    return false;  // continue mining
+}
+
+
 void Worker_hash::update_statistics(stats::Collector& stats_collector)
 {
-    auto hash_stats = std::get<stats::Hash>(stats_collector.get_worker_stats(m_config.m_internal_id));
+    auto& typed = stats::as_typed<stats::Hash>(stats_collector);
+    auto hash_stats = typed.get_worker_stats(m_config.m_internal_id);
     // PR #681 follow-up §4(4): exchange-with-zero so the publish + reset is
     // atomic from the writer's POV — no chance of double-counting hashes
     // posted between the read and the reset.
@@ -463,7 +494,7 @@ void Worker_hash::update_statistics(stats::Collector& stats_collector)
     hash_stats.m_best_leading_zeros = m_best_leading_zeros;
     hash_stats.m_met_difficulty_count = m_met_difficulty_count;
 
-    stats_collector.update_worker_stats(m_config.m_internal_id, hash_stats);
+    typed.update_worker_stats(m_config.m_internal_id, hash_stats);
 }
 
 }

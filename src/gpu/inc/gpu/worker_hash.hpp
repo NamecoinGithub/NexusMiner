@@ -19,6 +19,11 @@ namespace stats { class Collector; }
 
 namespace gpu
 {
+// Forward-declared test accessor — only a non-null body is provided
+// when WITH_GPU_HOST_STUBS=ON (in src/gpu/test/worker_hash_integration_test.cpp).
+// The friend declaration is unconditional so the header compiles in all modes.
+struct Worker_hash_test_access;
+
 class Worker_hash : public Worker, public std::enable_shared_from_this<Worker_hash>
 {
 public:
@@ -39,10 +44,21 @@ public:
     void update_statistics(stats::Collector& stats_collector) override;
 
 private:
+    friend struct Worker_hash_test_access;
 
     void run();
     std::uint32_t device_id() const;
     bool bind_device_context(const char* phase);
+
+    // Inner-loop body extracted for testability (WITH_GPU_HOST_STUBS integration
+    // tests call this directly without going through the run() background thread).
+    // Returns true when the caller should break the mining loop (winner credited
+    // or keccak-mismatch fault threshold reached).
+    bool step_once(Block_data& local_block,
+                   const uint1024_t& local_target,
+                   std::uint32_t local_throughput,
+                   std::uint32_t local_threads_per_block,
+                   std::uint32_t local_device_id);
 
     std::shared_ptr<asio::io_context> m_io_context;
     std::shared_ptr<spdlog::logger> m_logger;
