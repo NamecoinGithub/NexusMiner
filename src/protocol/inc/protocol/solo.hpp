@@ -22,6 +22,8 @@
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
 #include "spdlog/spdlog.h"
+#include <asio/io_context.hpp>
+#include <asio/steady_timer.hpp>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -53,7 +55,8 @@ public:
     };
 
     Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-         std::shared_ptr<NodeSessionContext> session_context);
+         std::shared_ptr<NodeSessionContext> session_context,
+         std::shared_ptr<asio::io_context> io_context = nullptr);
 
     void reset() override;
     network::Shared_payload login(Login_handler handler) override;
@@ -284,6 +287,21 @@ public:
 
     // Reconnect backoff (seconds) after receiving NODE_SHUTDOWN from the node.
     static constexpr uint32_t NODE_SHUTDOWN_BACKOFF_S = 60;
+
+    // ── Recovery-debounce test/diagnostic interface ──────────────────────────────
+    // These lightweight read-only accessors let unit tests (and future diagnostics)
+    // observe the state of the 2s deferred-recovery timer without needing a network
+    // connection or real workers.
+
+    /// True when a deferred recovery GET_BLOCK has been scheduled and is still pending.
+    bool is_recovery_pending() const noexcept {
+        return m_recovery_deferred_at != std::chrono::steady_clock::time_point::min();
+    }
+
+    /// How many times the 2s debounce timer fired and attempted to send a recovery
+    /// GET_BLOCK (regardless of whether the connection was available).  Used by unit
+    /// tests to assert that the timer did / did not fire.
+    int get_recovery_fired_count() const noexcept { return m_recovery_fired_count; }
 
     // Colin AI Diagnostic PING/PONG handler
     const ::LLP::ReceivedPingFrame& last_received_ping() const
@@ -566,6 +584,44 @@ private:
     std::chrono::steady_clock::time_point m_earliest_unanswered_get_round_at{};
     // Time of the most recent successfully-transmitted GET_ROUND.
     std::chrono::steady_clock::time_point m_last_get_round_transmitted_at{};
+
+    // ── NEW_ROUND recovery debounce (operator-directed 2s symmetric gate) ────────
+    // Prevents the "panic GET_BLOCK" that fires immediately when NEW_ROUND arrives
+    // with an invalid template, racing the BLOCK_DATA push that almost always
+    // arrives within 50–500ms.  Both the "PUSH-before-NEW_ROUND" and
+    // "NEW_ROUND-before-PUSH" orderings are handled symmetrically.
+    //
+    // m_io_context: ASIO context for the async timer.  Null in test environments
+    //   that do not supply one — in that case the debounce falls back to legacy
+    //   immediate behaviour so existing tests are unaffected.
+    // m_recovery_timer: fires the deferred recovery GET_BLOCK after 2s.  Null
+    //   when m_io_context is null.
+    // m_last_block_accepted_time / m_last_push_received_time: timestamps of the
+    //   most recent BLOCK_ACCEPTED and PUSH arrivals (used for diagnostic logging).
+    // m_recovery_deferred_at: set when the timer is scheduled; cleared on fire or
+    //   cancel.  sentinel = time_point::min() (not scheduled).
+    static constexpr auto kRecoveryDebounceWindow = std::chrono::seconds(2);
+    std::shared_ptr<asio::io_context> m_io_context;
+    std::unique_ptr<asio::steady_timer> m_recovery_timer;
+    std::chrono::steady_clock::time_point m_last_block_accepted_time{
+        std::chrono::steady_clock::time_point::min()};
+    std::chrono::steady_clock::time_point m_last_push_received_time{
+        std::chrono::steady_clock::time_point::min()};
+    std::chrono::steady_clock::time_point m_recovery_deferred_at{
+        std::chrono::steady_clock::time_point::min()};
+    int m_recovery_fired_count{0}; ///< Incremented each time the 2s timer fires (for tests)
+
+    // Schedule a deferred (2s) recovery GET_BLOCK in response to NEW_ROUND with
+    // no valid template.  Cancels any previously pending deferred recovery so
+    // rapid NEW_ROUND bursts are coalesced.  Falls back to immediate behaviour
+    // when no io_context is available (legacy / test environments).
+    void schedule_recovery_get_block(std::shared_ptr<network::Connection> connection,
+                                     uint32_t unified_height);
+
+    // Cancel any pending deferred recovery GET_BLOCK (called from PUSH /
+    // BLOCK_ACCEPTED handlers when a response has arrived before the 2s window
+    // elapsed — "push won the race").
+    void cancel_recovery_timer(const char* handler_name);
 
     // Consecutive hashPrevBlock mismatch counter (chain-in-flux doom-loop guard).
     // Incremented each time validate_current_template() detects a hashPrevBlock mismatch
