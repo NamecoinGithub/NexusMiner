@@ -2610,7 +2610,7 @@ void Solo::schedule_recovery_get_block(
     m_recovery_timer->cancel();
     m_recovery_timer->expires_after(kRecoveryDebounceWindow);
     m_recovery_timer->async_wait(
-        [this, conn = connection, deferred_at = now]
+        [this, conn = connection]
         (const asio::error_code& ec) {
             if (ec == asio::error::operation_aborted) {
                 // Cancelled — either a newer NEW_ROUND superseded us, or a

@@ -205,7 +205,9 @@ void test1_push_before_new_round()
                       "so no PUSH arrives during the 2s window to cancel it)",
                       f.solo.is_recovery_pending());
 
-    // Drain remaining 2s+ to let the timer fire (since no PUSH cancels it here)
+    // Drain remaining 2s+ to let the timer fire (since no PUSH cancels it here —
+    // the PUSH arrived BEFORE the NEW_ROUND, so m_last_push_received_time is
+    // already recorded but no new PUSH arrives during the 2s wait window)
     f.run_for(std::chrono::seconds(3));
     print_test_result("After 3s with no cancellation: recovery timer fired exactly once",
                       f.solo.get_recovery_fired_count() == 1);
