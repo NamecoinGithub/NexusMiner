@@ -24,8 +24,10 @@
 // thread and driving the inner loop deterministically.
 
 #include "gpu/worker_hash.hpp"
+#include "config/config.hpp"
 #include "config/worker_config.hpp"
 #include "host_stubs/sk1024_stub_control.hpp"
+#include "stats/stats_collector.hpp"
 
 #include <asio/io_context.hpp>
 #include <spdlog/spdlog.h>
@@ -35,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 
 // ---- Test accessor ----------------------------------------------------
 // Mirrors the pattern from src/cpu/worker_hash_shutdown_test.cpp.
@@ -74,6 +77,29 @@ struct Worker_hash_test_access
     static void reset_mismatch_count(Worker_hash& w)
     {
         w.m_keccak_mismatch_count.store(0, std::memory_order_relaxed);
+    }
+
+    static void set_mismatch_count(Worker_hash& w, std::uint32_t value)
+    {
+        w.m_keccak_mismatch_count.store(value, std::memory_order_relaxed);
+    }
+
+    static int met_difficulty_count(const Worker_hash& w)
+    {
+        return w.m_met_difficulty_count.load(std::memory_order_relaxed);
+    }
+
+    static void set_found_nonce_callback(Worker_hash& w,
+                                         Worker::Block_found_handler callback)
+    {
+        std::scoped_lock<std::mutex> lck(w.m_mtx);
+        w.m_found_nonce_callback = std::move(callback);
+    }
+
+    static void clobber_canonical_nonce(Worker_hash& w, std::uint64_t nonce)
+    {
+        std::scoped_lock<std::mutex> lck(w.m_mtx);
+        w.m_block.nNonce = nonce;
     }
 
     // Call step_once() directly (bypasses the background thread).
@@ -135,6 +161,22 @@ nexusminer::config::Worker_config make_gpu_config(std::uint16_t internal_id = 0)
     cfg.m_mode        = nexusminer::config::Worker_mode::GPU;
     cfg.m_worker_mode = nexusminer::config::Worker_config_gpu{};
     return cfg;
+}
+
+nexusminer::config::Config make_collector_config(nexusminer::config::Mining_mode mode,
+                                                 std::uint32_t worker_count)
+{
+    auto sink = std::make_shared<spdlog::sinks::null_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("collector-test-logger", sink);
+    nexusminer::config::Config config{std::move(logger)};
+    config.set_mining_mode(mode);
+    config.set_worker_count(worker_count);
+    auto& workers = config.get_worker_config();
+    for (std::size_t i = 0; i < workers.size(); ++i)
+    {
+        workers[i].m_internal_id = static_cast<std::uint16_t>(i);
+    }
+    return config;
 }
 
 // Build a zeroed-out Block_data with a known starting nonce.
@@ -263,6 +305,78 @@ void test_keccak_three_consecutive_trips_offline()
     check(total == 0u, "keccak mismatches do not credit hashes to m_hashes");
 }
 
+// ---- Test 3: healthy winner dispatch + stats Collector contract --------
+
+void test_positive_winner_dispatch_and_stats()
+{
+    using TA = nexusminer::gpu::Worker_hash_test_access;
+
+    install_null_logger();
+    nexusminer::gpu::stub_sk1024_reset();
+    nexusminer::gpu::stub_sk1024_win_on_call = 0;
+    nexusminer::gpu::stub_sk1024_keccak_mismatch = false;
+
+    auto io  = std::make_shared<asio::io_context>();
+    auto cfg = make_gpu_config(0);
+    auto worker = std::make_shared<nexusminer::gpu::Worker_hash>(io, cfg);
+
+    const std::uint32_t T   = 1u << 12;
+    const std::uint32_t tpb = 256;
+    const std::uint32_t dev = 0;
+    constexpr std::uint64_t starting_nonce = 0xBBBB'0000'0000'0000ull;
+    constexpr std::uint64_t post_winner_sentinel_nonce = 0xCCCC'0000'0000'0000ull;
+    constexpr std::uint16_t kInvalidWorkerId = 0xFFFFu;
+
+    nexusminer::Block_data local_block = make_block(starting_nonce);
+    uint1024_t local_target{};
+
+    std::optional<nexusminer::Block_data> callback_block;
+    std::uint16_t callback_worker_id = kInvalidWorkerId;
+    TA::set_found_nonce_callback(*worker,
+        [&](std::uint16_t worker_id, std::unique_ptr<nexusminer::Block_data> block)
+        {
+            callback_worker_id = worker_id;
+            callback_block = *block;
+        });
+
+    TA::clear_stop(*worker);
+    TA::set_running(*worker, true);
+    TA::set_mismatch_count(*worker, 2);
+
+    bool stop = TA::step_once(*worker, local_block, local_target, T, tpb, dev);
+    check(stop, "positive winner step_once returns true (stop)");
+    check(TA::met_difficulty_count(*worker) == 1,
+          "positive winner increments m_met_difficulty_count");
+    check(TA::mismatch_count(*worker) == 0,
+          "positive winner resets consecutive keccak mismatch count");
+
+    const std::uint64_t expected_winner_nonce = starting_nonce + T - 1u;
+
+    // Regression guard for async dispatch: the posted callback must carry the
+    // immutable winning block snapshot, not read later mutable m_block state.
+    TA::clobber_canonical_nonce(*worker, post_winner_sentinel_nonce);
+    io->run();
+
+    check(callback_worker_id == 0,
+          "positive winner dispatches callback with worker id");
+    check(callback_block.has_value(),
+          "positive winner dispatches callback block");
+    check(callback_block.has_value() &&
+              callback_block->nNonce == expected_winner_nonce,
+          "posted callback sees winning nonce snapshot, not later m_block");
+
+    auto collector_config = make_collector_config(
+        nexusminer::config::Mining_mode::HASH, 1);
+    auto collector = nexusminer::stats::make_collector(collector_config);
+    worker->update_statistics(*collector);
+    auto& typed = nexusminer::stats::as_typed<nexusminer::stats::Hash>(*collector);
+    auto hash_stats = typed.get_worker_stats(0);
+    check(hash_stats.m_met_difficulty_count == 1,
+          "update_statistics publishes met-difficulty count through base Collector");
+    check(hash_stats.m_hash_count == T,
+          "update_statistics publishes credited winner hashes through base Collector");
+}
+
 // ---- main -------------------------------------------------------------
 
 int main()
@@ -271,6 +385,7 @@ int main()
 
     test_linear_hashes_accumulation();
     test_keccak_three_consecutive_trips_offline();
+    test_positive_winner_dispatch_and_stats();
 
     if (g_failures != 0)
     {

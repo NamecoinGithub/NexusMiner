@@ -50,13 +50,14 @@ if (WITH_GPU_CUDA)
     endif()
 endif()
 
-# ---- Host-stubs build: worker_hash.cpp against stub CUDA functions ----
-# WITH_GPU_HOST_STUBS=ON builds the host-side portions of the GPU hash
-# worker against plain-C++ stubs (no nvcc / CUDA runtime required).
+# ---- Host-stubs build: GPU workers against stub CUDA functions ----
+# WITH_GPU_HOST_STUBS=ON builds the host-side portions of the GPU hash and
+# prime workers against plain-C++ stubs (no nvcc / CUDA runtime required).
 # This lets contributors without a CUDA toolchain validate:
 #   * The static_assert(offsetof(Block_data, nNonce) == 26*8) layout contract.
 #   * The linear (not quadratic) hashes-done accumulation invariant.
 #   * The keccak-mismatch fault-counter logic.
+#   * GPU-prime worker lifecycle/stat publication still compiles without nvcc.
 # WITH_GPU_HOST_STUBS and WITH_GPU_CUDA are mutually exclusive (stub symbols
 # would conflict with the real kernel object files).
 if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
@@ -65,8 +66,11 @@ if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
     # #ifdef ladder is needed inside the production source.
     add_library(gpu STATIC
         "src/gpu/worker_hash.cpp"
+        "src/gpu/worker_prime.cpp"
+        "src/gpu/prime/chain.cpp"
         "src/gpu/host_stubs/util_stub.cpp"
-        "src/gpu/host_stubs/sk1024_stub.cpp")
+        "src/gpu/host_stubs/sk1024_stub.cpp"
+        "src/gpu/host_stubs/prime_kernel_stub.cpp")
 
     target_compile_definitions(gpu PRIVATE GPU_CUDA_ENABLED GPU_HOST_STUBS)
 
@@ -75,6 +79,8 @@ if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
             $<INSTALL_INTERFACE:inc>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
         PRIVATE
+            ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/src/cpu/inc
             ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu)
 
@@ -96,6 +102,24 @@ if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
         gpu LLC worker LLP stats config TAO spdlog::spdlog asio)
 
     add_test(NAME worker_hash_integration_test COMMAND worker_hash_integration_test)
+
+    add_executable(worker_prime_host_stubs_test
+        "test/worker_prime_host_stubs_test.cpp")
+
+    target_include_directories(worker_prime_host_stubs_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/src/cpu/inc
+        ${CMAKE_SOURCE_DIR}/src/config/inc
+        ${CMAKE_SOURCE_DIR}/src/worker/inc
+        ${CMAKE_SOURCE_DIR}/src/stats/inc)
+
+    target_link_libraries(worker_prime_host_stubs_test
+        gpu LLC worker LLP stats config TAO spdlog::spdlog asio)
+
+    add_test(NAME worker_prime_host_stubs_test COMMAND worker_prime_host_stubs_test)
 
     # Prime-channel vOffsets regression test for the host-stubs preset.  This is
     # intentionally CUDA-free and does not require WITH_PRIME because it compiles

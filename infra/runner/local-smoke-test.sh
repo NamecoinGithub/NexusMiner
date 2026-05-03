@@ -7,15 +7,16 @@
 #   bash infra/runner/local-smoke-test.sh
 #
 # What this does:
-#   1. Configures the `gpu-host-stubs` preset (builds worker_hash.cpp
-#      against a stub cuda_sk1024_hash; no nvcc / GPU required).
+#   1. Configures the `gpu-host-stubs` preset (builds GPU hash/prime workers
+#      against stub CUDA boundaries; no nvcc / GPU required).
 #   2. Builds the preset.
-#   3. Runs the registered ctest suite (worker_hash_integration_test).
+#   3. Runs the registered ctest suite (including GPU worker host-stub tests).
 #
 # This is the recommended LOCAL validation step whenever you touch:
 #   src/gpu/src/gpu/worker_hash.cpp   — snapshot block, nonce aliasing
 #   src/gpu/inc/gpu/worker_hash.hpp   — class layout / static_assert
 #   src/gpu/src/gpu/cuda_hash/sk1024.h — kernel function contract
+#   src/gpu/src/gpu/worker_prime.cpp  — host-side lifecycle/stat publication
 #
 # Full GPU validation (with nvcc and a real device) requires pushing to
 # a branch with the [self-hosted, linux, x64, gpu, cuda] runner online.
