@@ -1254,7 +1254,7 @@ void Worker_manager::handle_node_shutdown(uint8_t reason)
 {
     m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02X})", reason);
 
-    const auto action = decide_node_shutdown_action(m_config.has_failover());
+    const auto action = nexusminer::decide_node_shutdown_action(m_config.has_failover());
     if (action == NodeShutdownAction::FULL_STOP)
     {
         m_logger->critical("[Worker_manager] NODE_SHUTDOWN received and no failover node is configured — full stop");
@@ -1263,8 +1263,8 @@ void Worker_manager::handle_node_shutdown(uint8_t reason)
     }
 
     network::Endpoint standby_endpoint;
-    bool switch_to_failover = !m_using_failover;
-    if (switch_to_failover)
+    bool target_is_failover = !m_using_failover;
+    if (target_is_failover)
     {
         standby_endpoint = m_failover_endpoint;
         if (!standby_endpoint.is_valid())
@@ -1299,7 +1299,7 @@ void Worker_manager::handle_node_shutdown(uint8_t reason)
         m_primary_node_session->reset();
     }
 
-    m_using_failover = switch_to_failover;
+    m_using_failover = target_is_failover;
     m_primary_fail_count = 0;
     m_connection_retry_count = 0;
     m_connection_backoff.reset();
