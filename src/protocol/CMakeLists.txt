@@ -195,6 +195,16 @@ add_nexusminer_test(NAME session_binding_test
     SOURCES     session_binding_test.cpp
     LINK_LIBS   protocol network asio spdlog)
 
+# --- NEW_ROUND recovery debounce (2s symmetric gate) ---
+# Host-only: no network connection, no GPU.  Drives the asio timer with
+# run_for() to validate that the deferred recovery GET_BLOCK fires /
+# is cancelled correctly for each operator-identified race-order scenario.
+add_nexusminer_test(NAME new_round_recovery_debounce_test
+    SOURCES     new_round_recovery_debounce_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol LLP LLC network asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
 # --- Packet router ---
 add_nexusminer_test(NAME packet_router_test
     SOURCES     packet_router_test.cpp
