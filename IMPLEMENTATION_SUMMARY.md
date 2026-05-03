@@ -8,14 +8,14 @@ This implementation enforces **strict port-lane separation** for the NexusMiner 
 ### Port 8323 → Legacy Lane
 - **Framing**: 8-bit header (1-byte opcode)
 - **Wire Format**: `[header:1B][length:4B][data]`
-- **Behavior**: Polling (GET_ROUND / GET_BLOCK)
+- **Behavior**: Push parity with stateless (MINER_READY + GET_BLOCK), 8-bit framing
 - **Opcodes**: 0x00-0xFF (legacy single-byte opcodes)
 - **Authentication**: Falcon + ChaCha20 (required)
 
 ### Port 9323 (and all others) → Stateless Lane
 - **Framing**: 16-bit header (2-byte opcode, big-endian)
 - **Wire Format**: `[header:2B][length:4B][data]`
-- **Behavior**: Push (STATELESS_GET_BLOCK notifications)
+- **Behavior**: Push (MINER_READY + GET_BLOCK), 16-bit mirror framing
 - **Opcodes**: 0xD000-0xD0FF (mirror-mapped from legacy)
 - **Authentication**: Falcon + ChaCha20 (required)
 
@@ -69,17 +69,17 @@ if (expected_uint16 != received_uint16) {
 #### Legacy Lane (Port 8323)
 After successful CHANNEL_ACK:
 ```
-1. Send GET_ROUND (0x85)
-2. Wait for NEW_ROUND/OLD_ROUND response
-3. Continue polling cycle
+1. Send MINER_READY (0xD8) as [header][00000000]
+2. Send GET_BLOCK (0x81) for the first template if no valid template exists
+3. Accept push-triggered GET_BLOCK/BLOCK_DATA template delivery using 8-bit framing
 ```
 
 #### Stateless Lane (Port 9323+)
 After successful CHANNEL_ACK:
 ```
-1. Send STATELESS_MINER_READY (0xD0D8)
-2. Wait for STATELESS_GET_BLOCK (0xD081) pushes
-3. No polling - server pushes new blocks
+1. Send STATELESS_MINER_READY (0xD0D8) as [header16][00000000]
+2. Send STATELESS_GET_BLOCK (0xD081) for the first template if no valid template exists
+3. Accept push-triggered GET_BLOCK/BLOCK_DATA template delivery using 16-bit framing
 ```
 
 ### 5. Block Submission (solo.cpp)
@@ -127,8 +127,8 @@ Then disconnects immediately.
 
 ### Verify Legacy Lane (Port 8323)
 1. Connect to node on port 8323
-2. Check logs for "LEGACY LANE: Using polling protocol"
-3. Verify GET_ROUND polling starts after CHANNEL_ACK
+2. Check logs for "LEGACY LANE: Using push protocol"
+3. Verify MINER_READY and an initial GET_BLOCK can be sent after CHANNEL_ACK
 4. Verify SUBMIT_BLOCK uses 8-bit header (0x01)
 
 ### Verify Stateless Lane (Port 9323)

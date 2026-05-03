@@ -151,14 +151,14 @@ Add to `miner.conf`:
 ```json
 {
   "wallet_ip": "127.0.0.1",
-  "port": 8323,              // Phase 2: miningport (stateless miner LLP server)
+  "port": 8323,              // Phase 2 miningport: legacy 8-bit framing, push behavior
   "local_ip": "127.0.0.1",
   "mining_mode": "PRIME",
   ...
 }
 ```
 
-**Important:** The `port` field connects to LLL-TAO's `miningport` (default 8323), which runs the Phase 2 stateless miner LLP server. This is **not** the RPC port or GUI port.
+**Important:** The `port` field connects to LLL-TAO's `miningport` (default 8323). Port 8323 uses legacy 8-bit framing with the same push behavior as the stateless 16-bit lane on 9323. This is **not** the RPC port or GUI port.
 
 ### Falcon Keys
 

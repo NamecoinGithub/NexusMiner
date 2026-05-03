@@ -131,31 +131,22 @@ namespace nexusminer
 			return true;
 		}
 		
-		// Helper to determine if a stateless (mirror-mapped) opcode is header-only
-		// (i.e., consumed as a bare 2-byte frame with no length field following).
-		//
-		// Three-way classification:
-		//  1. Framed normal   — length field always present (most data/auth opcodes)
-		//  2. Bare compat     — 0xD002/0xD003: some in-field node builds emit only 2 bytes
-		//  3. Dual-accept     — 0xD0C8/0xD0C9: LLL-TAO commit 206d1a2c emits the full
-		//                       6-byte framed form [opcode:2B][length:4B][0 bytes]; older
-		//                       or dormant builds may still emit the bare 2-byte form.
-		//                       Routed through is_stateless_zero_payload_compat_opcode()
-		//                       which prefers the framed form and falls back to bare form.
+		// Helper to determine if a stateless (mirror-mapped) opcode is zero-payload.
+		// Beta wire format requires the explicit 4-byte zero-length field; bare
+		// 2-byte headers are not accepted.
 		inline bool is_stateless_header_only_opcode(uint16_t opcode) {
 			if (!is_stateless_opcode(opcode)) return false;
 			// Un-mirrored data opcodes (PING_DIAG=0xD0E0, PONG_DIAG=0xD0E1) are always data-bearing.
 			// Their un-mirrored byte (0xE0, 0xE1) falls in the legacy header-only catch-all range,
 			// so we must short-circuit before calling is_legacy_header_only_opcode.
 			if (::LLP::IsUnmirroredDataOpcode(opcode)) return false;
-			// Some node builds emit compat submit-result opcodes as bare 2-byte stateless headers
-			// instead of a 2-byte header followed by a zero-length frame.
+			// Compat submit-result opcodes are still recognized, but must carry
+			// explicit zero/one-length framing.
 			if (opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
 			    opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT) return true;
 			// 0xD0C8 / 0xD0C9: LLL-TAO (commit 206d1a2c, src/LLP/stateless_miner_connection.cpp
 			// respond(STATELESS_BLOCK_ACCEPTED)) sends the full 6-byte framed form on the wire.
-			// Route through the zero-payload compat branch which prefers the framed form and
-			// falls back to the bare 2-byte form for any in-field node that still emits it.
+			// Route through the zero-payload compat branch for 0/1-byte result payloads.
 			if (opcode == LLP::StatelessMining::BLOCK_ACCEPTED ||
 			    opcode == LLP::StatelessMining::BLOCK_REJECTED) return false;
 			// GET_BLOCK (0xD081) is ALWAYS data-bearing on stateless lane (228-byte template push)
@@ -165,17 +156,54 @@ namespace nexusminer
 			return is_legacy_header_only_opcode(legacy);
 		}
 
-		// Returns true for opcodes whose stateless wire form is EITHER a bare 2-byte
-		// header (legacy compat) OR an explicit zero/one-length framed packet.
-		// The parser prefers the framed form when >= 6 bytes are available and the
-		// length field is 0 (or 1 for BLOCK_REJECTED variants), otherwise it falls
-		// back to treating the 2-byte header as a complete packet.
+		// Returns true for opcodes whose stateless wire form is an explicit
+		// zero/one-length framed packet.
 		inline bool is_stateless_zero_payload_compat_opcode(uint16_t opcode) {
 			return opcode == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
 			       opcode == LLP::StatelessMining::BLOCK_REJECTED_COMPAT ||
 			       opcode == LLP::StatelessMining::BLOCK_ACCEPTED ||   // 0xD0C8 — LLL-TAO 206d1a2c emits 6-byte framed form
 			       opcode == LLP::StatelessMining::BLOCK_REJECTED;     // 0xD0C9 — same
 		}
+	}
+
+	inline bool looks_like_cross_lane_frame_prefix(network::Shared_payload const& buffer,
+	                                              std::size_t start_index,
+	                                              ProtocolLane lane)
+	{
+		if (!buffer || start_index >= buffer->size())
+		{
+			return false;
+		}
+
+		if (lane == ProtocolLane::LEGACY)
+		{
+			if (start_index + 1 >= buffer->size())
+			{
+				return false;
+			}
+			uint16_t const header16 = read_be16(buffer->data() + start_index);
+			// 0xD0 is also the valid legacy MINER_AUTH_CHALLENGE opcode.  A
+			// following 0x00 byte is the normal high byte of the legacy length
+			// field for all supported auth payload sizes, so do not treat D0 00
+			// as an unambiguous cross-lane prefix.
+			if ((*buffer)[start_index] == PacketConstants::STATELESS_OPCODE_THRESHOLD &&
+			    (*buffer)[start_index + 1] == 0x00)
+			{
+				return false;
+			}
+			return PacketConstants::is_stateless_opcode(header16) ||
+			       ::LLP::IsUnmirroredDataOpcode(header16);
+		}
+
+		if (lane == ProtocolLane::STATELESS)
+		{
+			// All supported stateless wire opcodes begin with the 0xD0 mirror prefix
+			// (including un-mirrored diagnostic opcodes such as 0xD0E0/0xD0E1).
+			// A different first byte is a legacy-framed packet on the stateless lane.
+			return (*buffer)[start_index] != PacketConstants::STATELESS_OPCODE_THRESHOLD;
+		}
+
+		return false;
 	}
 	
 	/** Class to handle sending and receiving of LLP Packets. **/
@@ -920,22 +948,21 @@ namespace nexusminer
 			// Header-only opcodes: complete with just 1 byte
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
-				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				if (buffer_size < MIN_PACKET_SIZE)
 				{
-				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					remaining_size = buffer_size - MIN_PACKET_SIZE;
-					return packet;
-				case HeaderOnlyWireForm::BARE_HEADER:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					remaining_size = buffer_size - 1;
-					return packet;
-				case HeaderOnlyWireForm::NEED_MORE_DATA:
 					packet.m_is_valid = false;
 					return packet;
 				}
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
+				if (length != 0)
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				remaining_size = buffer_size - MIN_PACKET_SIZE;
+				return packet;
 			}
 			
 			// Data/auth packet: need header + 4-byte length field
@@ -989,22 +1016,21 @@ namespace nexusminer
 			if (PacketConstants::is_stateless_opcode(header16) && 
 			    PacketConstants::is_stateless_header_only_opcode(header16))
 			{
-				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				if (buffer_size < MIN_PACKET_SIZE)
 				{
-				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					remaining_size = buffer_size - MIN_PACKET_SIZE;
-					return packet;
-				case HeaderOnlyWireForm::BARE_HEADER:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					remaining_size = buffer_size - 2;
-					return packet;
-				case HeaderOnlyWireForm::NEED_MORE_DATA:
 					packet.m_is_valid = false;
 					return packet;
 				}
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
+				if (length != 0)
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				remaining_size = buffer_size - MIN_PACKET_SIZE;
+				return packet;
 			}
 			
 			// Data/auth packet: need header + 4-byte length field
@@ -1115,24 +1141,22 @@ namespace nexusminer
 			// Request/response packets and MINER_READY/PING are header-only
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
-				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				if (buffer_size < MIN_PACKET_SIZE)
 				{
-				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					bytes_consumed = MIN_PACKET_SIZE;
-					result = ParseResult::SUCCESS;
-					return packet;
-				case HeaderOnlyWireForm::BARE_HEADER:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					bytes_consumed = HEADER_SIZE;
-					result = ParseResult::SUCCESS;
-					return packet;
-				case HeaderOnlyWireForm::NEED_MORE_DATA:
 					result = ParseResult::NEED_MORE_DATA;
 					return packet;
 				}
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
+				if (length != 0)
+				{
+					result = ParseResult::MALFORMED;
+					return packet;
+				}
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				bytes_consumed = MIN_PACKET_SIZE;
+				result = ParseResult::SUCCESS;
+				return packet;
 			}
 			
 			// Data or auth packet: need header + 4-byte length field minimum
@@ -1214,37 +1238,37 @@ namespace nexusminer
 			// otherwise accept the bare header form so adjacent packets are not misframed.
 			if (is_valid_stateless && PacketConstants::is_stateless_zero_payload_compat_opcode(header16))
 			{
-				if (buffer_size >= MIN_PACKET_SIZE)
+				if (buffer_size < MIN_PACKET_SIZE)
 				{
-					std::uint32_t const compat_length = read_be32(buffer->data() + start_index + 2);
-					if (compat_length == 0 ||
-					    ((header16 == LLP::StatelessMining::BLOCK_REJECTED_COMPAT ||
-					      header16 == LLP::StatelessMining::BLOCK_REJECTED) && compat_length == 1))
-					{
-						std::size_t const compat_packet_size = MIN_PACKET_SIZE + compat_length;
-						if (buffer_size < compat_packet_size)
-						{
-							result = ParseResult::NEED_MORE_DATA;
-							return packet;
-						}
-
-						packet.m_is_valid = true;
-						packet.m_length = compat_length;
-						if (compat_length > 0)
-						{
-							packet.m_data = std::make_shared<network::Payload>(
-								buffer_start + MIN_PACKET_SIZE, buffer_start + compat_packet_size);
-						}
-						bytes_consumed = compat_packet_size;
-						result = ParseResult::SUCCESS;
-						return packet;
-					}
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
 				}
 
-				packet.m_is_valid = true;
-				packet.m_length = 0;
-				bytes_consumed = HEADER_SIZE;
-				result = ParseResult::SUCCESS;
+				std::uint32_t const compat_length = read_be32(buffer->data() + start_index + 2);
+				if (compat_length == 0 ||
+				    ((header16 == LLP::StatelessMining::BLOCK_REJECTED_COMPAT ||
+				      header16 == LLP::StatelessMining::BLOCK_REJECTED) && compat_length == 1))
+				{
+					std::size_t const compat_packet_size = MIN_PACKET_SIZE + compat_length;
+					if (buffer_size < compat_packet_size)
+					{
+						result = ParseResult::NEED_MORE_DATA;
+						return packet;
+					}
+
+					packet.m_is_valid = true;
+					packet.m_length = compat_length;
+					if (compat_length > 0)
+					{
+						packet.m_data = std::make_shared<network::Payload>(
+							buffer_start + MIN_PACKET_SIZE, buffer_start + compat_packet_size);
+					}
+					bytes_consumed = compat_packet_size;
+					result = ParseResult::SUCCESS;
+					return packet;
+				}
+
+				result = ParseResult::MALFORMED;
 				return packet;
 			}
 
@@ -1252,24 +1276,22 @@ namespace nexusminer
 			// Un-mirrored data opcodes are always data-bearing (never header-only)
 			if (is_valid_stateless && PacketConstants::is_stateless_header_only_opcode(header16))
 			{
-				switch (classify_header_only_wire_form(buffer, start_index, HEADER_SIZE))
+				if (buffer_size < MIN_PACKET_SIZE)
 				{
-				case HeaderOnlyWireForm::EXPLICIT_ZERO_LENGTH:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					bytes_consumed = MIN_PACKET_SIZE;
-					result = ParseResult::SUCCESS;
-					return packet;
-				case HeaderOnlyWireForm::BARE_HEADER:
-					packet.m_is_valid = true;
-					packet.m_length = 0;
-					bytes_consumed = HEADER_SIZE;
-					result = ParseResult::SUCCESS;
-					return packet;
-				case HeaderOnlyWireForm::NEED_MORE_DATA:
 					result = ParseResult::NEED_MORE_DATA;
 					return packet;
 				}
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
+				if (length != 0)
+				{
+					result = ParseResult::MALFORMED;
+					return packet;
+				}
+				packet.m_is_valid = true;
+				packet.m_length = 0;
+				bytes_consumed = MIN_PACKET_SIZE;
+				result = ParseResult::SUCCESS;
+				return packet;
 			}
 			
 			// Data or auth packet: need header + 4-byte length field minimum

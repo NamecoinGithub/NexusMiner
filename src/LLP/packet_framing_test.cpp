@@ -670,8 +670,7 @@ void test_legacy_data_packet_single_byte() {
 }
 
 // ============================================================================
-// Test Case 15: Legacy header-only opcodes accept explicit zero-length frames
-// and still fall back to bare-header parsing once the stream proves that form.
+// Test Case 15: Legacy header-only opcodes require explicit zero-length frames.
 // ============================================================================
 void test_legacy_header_only_single_byte() {
     std::cout << "\nTest 15: Legacy header-only opcode framing" << std::endl;
@@ -696,17 +695,15 @@ void test_legacy_header_only_single_byte() {
                  acc.empty();
     print_test_result("GET_BLOCK (129) explicit zero-length frame parsed correctly", test2);
     
-    // Bare-header fallback still works once the next byte proves this is not [header][00000000].
-    acc.feed({253, 204});
+    // Bare-header fallback is no longer allowed: a header-only opcode with a
+    // non-zero explicit length is malformed.
+    acc.feed({253, 0x00, 0x00, 0x00, 0x01});
     
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test3 = parsed3 &&
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 253) &&
-                 (packet.m_length == 0) &&
-                 (acc.size() == 1) &&
-                 (acc.buffer.front() == 204);
-    print_test_result("PING (253) bare-header form still parses when followed by non-zero next byte", test3);
+    bool test3 = !parsed3 &&
+                 (result == ParseResult::MALFORMED) &&
+                 acc.empty();
+    print_test_result("PING (253) bare-header form is rejected as malformed", test3);
     acc.clear();
     
     // MINER_READY (216) is still accepted as a framed zero-length header-only packet.
@@ -784,8 +781,7 @@ void test_stateless_data_packet_two_byte() {
 }
 
 // ============================================================================
-// Test Case 18: Stateless header-only opcodes accept explicit zero-length frames
-// and still fall back to bare-header parsing once the stream proves that form.
+// Test Case 18: Stateless header-only opcodes require explicit zero-length frames.
 // NOTE: GET_BLOCK (0xD081) is NOT header-only on stateless (template push).
 // ============================================================================
 void test_stateless_header_only_two_byte() {
@@ -824,22 +820,18 @@ void test_stateless_header_only_two_byte() {
                  acc.empty();
     print_test_result("STATELESS_MINER_READY (0xD0D8) explicit zero-length frame parsed correctly", test3);
 
-    // Bare-header fallback still works once the following bytes are clearly not a zero-length frame.
+    // Bare-header fallback is no longer allowed on the stateless lane either.
     acc.feed({0xD0, 0xD8, 0xD0});
     bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test4 = parsed4 &&
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 0xD0D8) &&
-                 (packet.m_length == 0) &&
-                 (acc.size() == 1) &&
-                 (acc.buffer.front() == 0xD0);
-    print_test_result("STATELESS_MINER_READY (0xD0D8) bare-header form still parses when followed by non-zero next byte", test4);
+    bool test4 = !parsed4 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 3);
+    print_test_result("STATELESS_MINER_READY (0xD0D8) bare-header form waits/rejects instead of parsing", test4);
     acc.clear();
 }
 
 // ============================================================================
-// Test Case 18b: Stateless compat submit-result opcodes accept both header-only
-// and explicit zero/one-length framed forms.
+// Test Case 18b: Stateless submit-result opcodes require explicit zero/one-length frames.
 // ============================================================================
 void test_stateless_submit_result_compat_forms() {
     std::cout << "\nTest 18b: Stateless compat submit-result opcode wire forms" << std::endl;
@@ -848,15 +840,14 @@ void test_stateless_submit_result_compat_forms() {
     Packet packet;
     ParseResult result;
 
-    // Header-only BLOCK_ACCEPTED_COMPAT (0xD002)
+    // Header-only BLOCK_ACCEPTED_COMPAT (0xD002) is no longer accepted without len4.
     acc.feed({0xD0, 0x02});
     bool parsed1 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test1 = parsed1 &&
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 0xD002) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("BLOCK_ACCEPTED_COMPAT header-only form parsed immediately", test1);
+    bool test1 = !parsed1 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 2);
+    print_test_result("BLOCK_ACCEPTED_COMPAT bare header waits for required len4", test1);
+    acc.clear();
 
     // Explicit framed zero-length BLOCK_ACCEPTED_COMPAT
     acc.feed({0xD0, 0x02, 0x00, 0x00, 0x00, 0x00});
@@ -868,25 +859,25 @@ void test_stateless_submit_result_compat_forms() {
                  acc.empty();
     print_test_result("BLOCK_ACCEPTED_COMPAT explicit zero-length frame parsed", test2);
 
-    // Header-only compat followed immediately by another valid packet should not
-    // be misread as a zero-length frame for the next packet.
-    acc.feed({0xD0, 0x02, 0xD0, 0xD8});
+    // A bare compat header followed immediately by another packet is malformed
+    // now because the required zero-length field is missing.
+    acc.feed({0xD0, 0x02, 0xD0, 0xD8, 0x00, 0x00});
     bool parsed3 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test3 = parsed3 &&
-                 !parsed4 &&
-                 (result == ParseResult::NEED_MORE_DATA) &&
-                 (acc.size() == 2);
-    print_test_result("Header-only BLOCK_ACCEPTED_COMPAT leaves adjacent stateless header-only packet intact", test3);
+    bool test3 = !parsed3 &&
+                 (result == ParseResult::MALFORMED) &&
+                 acc.empty();
+    print_test_result("Bare compat header followed by another packet is malformed", test3);
 
-    acc.feed({0x00, 0x00, 0x00, 0x00});
+    acc.feed({0xD0, 0x02, 0x00, 0x00, 0x00, 0x00,
+              0xD0, 0xD8, 0x00, 0x00, 0x00, 0x00});
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
     bool parsed5 = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test4 = parsed5 &&
+    bool test4 = parsed4 && parsed5 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 0xD0D8) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("Adjacent STATELESS_MINER_READY explicit zero-length frame parsed after compat opcode", test4);
+    print_test_result("Adjacent framed compat + MINER_READY zero-length packets parse correctly", test4);
 
     // BLOCK_REJECTED_COMPAT supports zero-length and 1-byte reason payload forms.
     acc.feed({0xD0, 0x03, 0x00, 0x00, 0x00, 0x00});
@@ -1419,12 +1410,10 @@ void test_stateless_block_rejected_framed_with_reason_byte() {
 }
 
 // ============================================================================
-// Test Case 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form — compat fallback
-// Some dormant in-field node builds emit only the 2-byte header with no length field.
-// The compat fallback must still accept this so we do not regress those operators.
+// Test Case 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form is rejected.
 // ============================================================================
-void test_stateless_block_accepted_bare_form_still_works() {
-    std::cout << "\nTest 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form (compat fallback)" << std::endl;
+void test_stateless_block_accepted_bare_form_is_rejected() {
+    std::cout << "\nTest 29: STATELESS_BLOCK_ACCEPTED (0xD0C8) bare 2-byte form rejected" << std::endl;
 
     TestAccumulator acc;
     Packet packet;
@@ -1433,12 +1422,10 @@ void test_stateless_block_accepted_bare_form_still_works() {
     // Only 2 bytes — no length field present.
     acc.feed({0xD0, 0xC8});
     bool parsed = acc.parse_one_packet(ProtocolLane::STATELESS, packet, result);
-    bool test1 = parsed &&
-                 (result == ParseResult::SUCCESS) &&
-                 (packet.m_header == 0xD0C8) &&
-                 (packet.m_length == 0) &&
-                 acc.empty();
-    print_test_result("STATELESS_BLOCK_ACCEPTED bare form: SUCCESS, bytes_consumed=2, accumulator empty", test1);
+    bool test1 = !parsed &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 2);
+    print_test_result("STATELESS_BLOCK_ACCEPTED bare form waits for required len4", test1);
 }
 
 // ============================================================================
@@ -1488,6 +1475,28 @@ void test_stateless_block_accepted_followed_by_prime_available() {
 }
 
 // ============================================================================
+// Test Case 31: Cross-lane frame prefixes are recognizable before byte-drop resync
+// ============================================================================
+void test_cross_lane_prefix_detection() {
+    std::cout << "\nTest 31: Cross-lane frame prefix detection" << std::endl;
+
+    auto stateless_reject_on_legacy =
+        std::make_shared<network::Payload>(network::Payload{0xD0, 0xC9, 0x00, 0x00, 0x00, 0x00});
+    auto legacy_reject_on_stateless =
+        std::make_shared<network::Payload>(network::Payload{0xC9, 0x00, 0x00, 0x00, 0x00});
+    auto legacy_auth_challenge =
+        std::make_shared<network::Payload>(network::Payload{0xD0, 0x00, 0x00, 0x00, 0x04,
+                                                            0xAA, 0xBB, 0xCC, 0xDD});
+
+    print_test_result("0xD0C9 framed stateless reject is cross-lane on LEGACY",
+        looks_like_cross_lane_frame_prefix(stateless_reject_on_legacy, 0, ProtocolLane::LEGACY));
+    print_test_result("0xC9 legacy reject is cross-lane on STATELESS",
+        looks_like_cross_lane_frame_prefix(legacy_reject_on_stateless, 0, ProtocolLane::STATELESS));
+    print_test_result("0xD0 legacy auth challenge with len4 is not cross-lane on LEGACY",
+        !looks_like_cross_lane_frame_prefix(legacy_auth_challenge, 0, ProtocolLane::LEGACY));
+}
+
+// ============================================================================
 // Main test runner
 // ============================================================================
 int main() {
@@ -1528,8 +1537,9 @@ int main() {
     test_stateless_block_accepted_framed_form();
     test_stateless_block_rejected_framed_form();
     test_stateless_block_rejected_framed_with_reason_byte();
-    test_stateless_block_accepted_bare_form_still_works();
+    test_stateless_block_accepted_bare_form_is_rejected();
     test_stateless_block_accepted_followed_by_prime_available();
+    test_cross_lane_prefix_detection();
     
     std::cout << "\n========================================" << std::endl;
     std::cout << "Test Summary" << std::endl;

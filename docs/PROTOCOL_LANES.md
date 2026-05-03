@@ -1,6 +1,6 @@
 # Protocol Lane Architecture
 
-NexusMiner implements a dual-lane mining protocol that strictly separates legacy 8-bit opcodes from modern stateless 16-bit opcodes.
+NexusMiner implements a dual-lane push-mining protocol that strictly separates legacy 8-bit wire framing from modern stateless 16-bit mirror-mapped wire framing.
 
 ## Overview
 
@@ -9,7 +9,7 @@ NexusMiner supports two protocol lanes, **strictly separated by port**:
 * **Port 8323**: Legacy lane (8-bit opcodes, 1-byte headers)
 * **Port 9323**: Stateless lane (16-bit opcodes, 2-byte headers, mirror-mapped 0xD0xx)
 
-**Key principle:** Lane determination is port-based and immutable per connection. There is no heuristic byte-value detection and no fallback between lanes.
+**Key principle:** Lane determination is port-based and immutable per connection. There is no heuristic byte-value detection and no fallback between lanes. Both lanes run the same push-notification mining flow (`MINER_READY` then `GET_BLOCK` template delivery); only opcode width and framing differ.
 
 ## Wire Format
 
@@ -19,7 +19,7 @@ NexusMiner supports two protocol lanes, **strictly separated by port**:
 [header: 1 byte][length: 4 bytes BE][payload: N bytes]
 ```
 
-* **Header-only packets** (requests/responses): Emit an explicit zero-length frame on the wire: `[header][00 00 00 00]`
+* **Header-only packets** (requests/responses): MUST emit an explicit zero-length frame on the wire: `[header][00 00 00 00]`
 * **Data packets**: Include the 4-byte big-endian length field followed by the payload
 
 ### Stateless Lane (Port 9323)
@@ -28,14 +28,14 @@ NexusMiner supports two protocol lanes, **strictly separated by port**:
 [header: 2 bytes BE][length: 4 bytes BE][payload: N bytes]
 ```
 
-* **Header-only packets** (requests/responses): Emit an explicit zero-length frame on the wire: `[header(2)][00 00 00 00]`
+* **Header-only packets** (requests/responses): MUST emit an explicit zero-length frame on the wire: `[header(2)][00 00 00 00]`
 * **Data packets**: Include the 4-byte big-endian length field followed by the payload
 
-### Zero-Length Framing Compatibility
+### Zero-Length Framing Requirement
 
 The current miner always transmits the 4-byte big-endian length field, even when the
-payload length is zero. Legacy bare-header packets are still accepted on receive as a
-compatibility fallback, but the preferred wire form is the explicit zero-length frame.
+payload length is zero. Bare-header packets are no longer accepted in beta builds; the
+explicit zero-length frame is required on both lanes.
 
 This fixes the historical framing bug where omitting the zero-length field on header-only
 opcodes could leave the node waiting on a partial read, causing stalled submit parsing and
@@ -46,8 +46,8 @@ opcodes so packet boundaries stay aligned.
 
 The protocol lane is **strictly determined by the remote port**:
 
-* **Port 8323** → LEGACY lane
-* **Port 9323 (or any other port)** → STATELESS lane
+* **Port 8323** → LEGACY lane, 8-bit framing
+* **Port 9323 (or any other port)** → STATELESS lane, 16-bit mirror framing
 
 **Important:** This determination is immutable per connection. The protocol **never** attempts to detect the lane by examining byte values. Once a connection is established, its lane cannot change.
 
@@ -137,11 +137,18 @@ The pre-Tritium format included `nTime` in the template:
 
 ## Key Design Decisions
 
-### GET_BLOCK Behavior Difference
+### GET_BLOCK Behavior
 
-* **Legacy GET_BLOCK (0x81/129)**: Header-only request. The miner sends this opcode to request a block template. The node responds with BLOCK_DATA (0x00) containing the template.
-  
-* **Stateless GET_BLOCK (0xD081)**: **Data-bearing** opcode. The node sends this opcode with a 228-byte template payload directly to the miner (push model). This is a critical difference from the legacy lane.
+Both lanes use push-notification behavior. After `CHANNEL_ACK`, the miner sends
+`MINER_READY` and also sends `GET_BLOCK` for the first template because a spontaneous
+push is not guaranteed to arrive immediately after authentication.
+
+* **Legacy GET_BLOCK (0x81/129)**: 8-bit-framed request / template-delivery opcode.
+* **Stateless GET_BLOCK (0xD081)**: 16-bit mirror-framed request / template-delivery opcode.
+
+The intended semantic contract is the same: `GET_BLOCK` carries or requests the current
+228-byte template (`12-byte metadata + 216-byte Tritium block`) depending on direction
+and node timing.
 
 ### Auth Opcode Mirror Mapping
 
@@ -173,8 +180,8 @@ This overload provides optional TX safety. It's not required if the packet is al
 
 The parser uses the connection lane (determined from the remote port) to decide header width:
 
-* **LEGACY lane**: Reads 1-byte headers
-* **STATELESS lane**: Reads 2-byte big-endian headers
+* **LEGACY lane**: Reads 1-byte headers and requires explicit 4-byte zero lengths for zero-payload opcodes
+* **STATELESS lane**: Reads 2-byte big-endian headers and requires explicit 4-byte zero lengths for zero-payload opcodes
 
 The parser **never** guesses the lane from byte values. It uses the port-determined lane for the entire connection lifecycle.
 

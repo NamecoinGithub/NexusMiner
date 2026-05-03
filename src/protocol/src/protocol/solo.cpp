@@ -2029,6 +2029,53 @@ bool Solo::requires_active_session_packet(Packet const& packet)
            packet.m_header == static_cast<uint32_t>(::LLP::SessionStatusOpcodes::SESSION_STATUS_ACK_LEGACY);
 }
 
+bool Solo::activate_push_lane_after_channel_ack(std::shared_ptr<network::Connection> connection)
+{
+    // Unified push-subscription path: both protocol lanes share the same mining
+    // behavior after CHANNEL_ACK.  PacketBuilder is the only difference: legacy
+    // emits 8-bit opcodes, stateless emits 16-bit mirror-mapped opcodes.
+    const char* lane_name = get_lane_name(m_protocol_lane);
+    const auto opcode_str = format_lane_opcode(m_protocol_lane, LLP::MINER_READY);
+
+    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+    m_logger->info("[Solo Protocol] {} LANE: Using push protocol", lane_name);
+    m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
+    m_logger->info("[Solo Protocol] Sending MINER_READY ({})", opcode_str);
+
+    auto miner_ready_payload = send_miner_ready();
+    if (!miner_ready_payload || miner_ready_payload->empty()) {
+        m_logger->error("[Solo Protocol] Failed to encode MINER_READY on {} lane", lane_name);
+        if (connection) {
+            connection->close();
+        }
+        return false;
+    }
+
+    if (!connection) {
+        m_logger->error("[Solo Protocol] No connection available");
+        return false;
+    }
+
+    if (!queue_payload(connection, miner_ready_payload, "[Solo Push] MINER_READY")) {
+        m_logger->error("[Solo Protocol] MINER_READY payload was not queued on {} lane", lane_name);
+        return false;
+    }
+
+    m_logger->info("[Solo Protocol] ✓ MINER_READY ({}) transmitted on {} lane", opcode_str, lane_name);
+    if (m_session_context) {
+        m_session_context->set_channel_state(m_channel, false, true);
+        m_session_context->mark_activity();
+    }
+    validate_authoritative_session("Solo ChannelAck", false);
+    log_session_container_summary("Solo ChannelAck");
+    flush_pending_push_after_auth(connection, "Solo Protocol");
+    if (m_work_ready_handler &&
+        (!m_session_context || m_session_context->can_request_get_block())) {
+        m_work_ready_handler();
+    }
+    return true;
+}
+
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
         // Clear in-flight GET_BLOCK state unconditionally — the node has responded.
@@ -3712,46 +3759,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             return;
         }
 
-        {
-            // Unified push-subscription path — lane-specific framing handled by PacketBuilder
-            const char* lane_name = get_lane_name(m_protocol_lane);
-            const auto opcode_str = format_lane_opcode(m_protocol_lane, LLP::MINER_READY);
-
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] {} LANE: Using push protocol", lane_name);
-            m_logger->info("[Solo Protocol] ═══════════════════════════════════════");
-            m_logger->info("[Solo Protocol] Sending MINER_READY ({})", opcode_str);
-
-            auto miner_ready_payload = send_miner_ready();
-            if (!miner_ready_payload || miner_ready_payload->empty()) {
-                m_logger->error("[Solo Protocol] Failed to encode MINER_READY on {} lane", lane_name);
-                if (connection) {
-                    connection->close();
-                }
-                return;
-            }
-
-            if (connection) {
-                if (!queue_payload(connection, miner_ready_payload, "[Solo Push] MINER_READY")) {
-                    m_logger->error("[Solo Protocol] MINER_READY payload was not queued on {} lane", lane_name);
-                    return;
-                }
-                m_logger->info("[Solo Protocol] ✓ MINER_READY ({}) transmitted on {} lane", opcode_str, lane_name);
-                if (m_session_context) {
-                    m_session_context->set_channel_state(m_channel, false, true);
-                    m_session_context->mark_activity();
-                }
-                validate_authoritative_session("Solo ChannelAck", false);
-                log_session_container_summary("Solo ChannelAck");
-                flush_pending_push_after_auth(connection, "Solo Protocol");
-                if (m_work_ready_handler &&
-                    (!m_session_context || m_session_context->can_request_get_block())) {
-                    m_work_ready_handler();
-                }
-            } else {
-                m_logger->error("[Solo Protocol] No connection available");
-                return;
-            }
+        if (!activate_push_lane_after_channel_ack(connection)) {
+            return;
         }
     }
     else if (matches_opcode(packet, Packet::SESSION_START))
@@ -5520,7 +5529,8 @@ void Solo::initialize_protocol_lane(std::shared_ptr<network::Connection> connect
     const char* framing = (m_protocol_lane == ProtocolLane::STATELESS)
                             ? "16-bit header (0xD000-0xD0FF)" : "8-bit header (legacy)";
     const char* behavior = (m_protocol_lane == ProtocolLane::STATELESS)
-                            ? "Push (STATELESS_GET_BLOCK)" : "Polling (GET_ROUND / GET_BLOCK)";
+                            ? "Push (MINER_READY / GET_BLOCK)"
+                            : "Push (MINER_READY / GET_BLOCK) with 8-bit opcodes";
 
     // Log lane selection
     m_logger->info("═══════════════════════════════════════════════════════════");
