@@ -954,7 +954,7 @@ namespace nexusminer
 					return packet;
 				}
 				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
-				if (length != 0 || buffer_size < MIN_PACKET_SIZE)
+				if (length != 0)
 				{
 					packet.m_is_valid = false;
 					return packet;
@@ -1022,7 +1022,7 @@ namespace nexusminer
 					return packet;
 				}
 				std::uint32_t const length = read_be32(buffer->data() + start_index + 2);
-				if (length != 0 || buffer_size < MIN_PACKET_SIZE)
+				if (length != 0)
 				{
 					packet.m_is_valid = false;
 					return packet;

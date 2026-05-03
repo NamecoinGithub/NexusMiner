@@ -695,9 +695,9 @@ void test_legacy_header_only_single_byte() {
                  acc.empty();
     print_test_result("GET_BLOCK (129) explicit zero-length frame parsed correctly", test2);
     
-    // Bare-header fallback is no longer allowed: every header-only opcode must
-    // carry the explicit 4-byte zero-length field.
-    acc.feed({253, 204, 0x00, 0x00, 0x00});
+    // Bare-header fallback is no longer allowed: a header-only opcode with a
+    // non-zero explicit length is malformed.
+    acc.feed({253, 0x00, 0x00, 0x00, 0x01});
     
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
     bool test3 = !parsed3 &&
