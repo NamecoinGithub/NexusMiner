@@ -88,21 +88,20 @@ Common issues and solutions for NexusMiner configuration, mining, and connectivi
 
 ---
 
-### "Node doesn't support stateless protocol"
+### "Wrong lane or stale protocol logs"
 
 **Symptoms:**
 ```
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ⚠️  No response - node doesn't support stateless
-[Solo Protocol] ℹ️  Falling back to legacy GET_ROUND polling
+[NodeSession:PRIMARY] Cross-lane packet prefix ... closing instead of byte-drop resync
 ```
 
-**This is normal!** The miner automatically falls back to legacy protocol.
+This means the node and miner disagree on the port-selected framing. The miner no
+longer falls back between lanes.
 
-**To enable stateless:**
-1. Update node to LLL-TAO 5.1.0+ with PR #170
-2. Restart node with `mining=1` in nexus.conf
-3. Restart miner (will auto-detect)
+**To fix:**
+1. Verify the node mining port.
+2. Use `8323` for legacy 8-bit framing or `9323` for stateless 16-bit mirror framing.
+3. Restart miner and node after changing the port.
 
 **See:** [docs/upgrade-guides/legacy-to-stateless.md](../upgrade-guides/legacy-to-stateless.md)
 
@@ -836,16 +835,10 @@ wireshark mining.pcap
 
 Look for these in debug logs:
 
-**Stateless protocol:**
-- `MINER_AUTH (0xD000)`
-- `MINER_AUTH_RESPONSE (0xD001)`
-- `MINER_READY (0xD007)`
-- `GET_BLOCK (0xD008)`
-- `NEW_BLOCK (0xD009)`
-
-**Legacy protocol:**
-- `GET_ROUND (0x05)`
-- `BLOCK_DATA (0x06)`
+**Push protocol:**
+- legacy lane: `MINER_READY (0xD8)`, `GET_BLOCK (0x81)`
+- stateless lane: `MINER_READY (0xD0D8)`, `GET_BLOCK (0xD081)`
+- zero-payload opcodes include the 4-byte zero length on both lanes
 
 **See:** [docs/reference/opcodes-reference.md](../reference/opcodes-reference.md)
 

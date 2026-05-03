@@ -4,18 +4,18 @@ This guide helps you transition from the legacy polling-based mining protocol to
 
 ## Overview
 
-**Good news:** Migration is automatic! NexusMiner 1.5+ automatically detects node capabilities and uses the best available protocol.
+**Good news:** Both mining lanes now use the same push-notification behavior. The selected port only changes the wire framing width.
 
 ## What Changed
 
-### Legacy Protocol (Pre-1.5)
-- **GET_ROUND polling** every 1-5 seconds
-- Higher network traffic
-- 1-5 second template latency
-- More CPU overhead from polling loop
+### Legacy Lane (Port 8323)
+- **8-bit opcode framing**
+- **Push behavior** with `MINER_READY` and `GET_BLOCK`
+- Header-only opcodes require `[opcode][00000000]`
 
-### Stateless Protocol (1.5+)
-- **Push notifications** (GET_BLOCK, NEW_BLOCK)
+### Stateless Lane (Port 9323+)
+- **16-bit mirror-mapped opcode framing**
+- **Push notifications** (`MINER_READY`, `GET_BLOCK`)
 - Minimal network traffic
 - < 10ms template latency
 - Event-driven (lower CPU overhead)
@@ -44,12 +44,12 @@ make -j4
 
 **No configuration changes needed!** Your existing `miner.conf` will work.
 
-**Optional:** Verify you're using the modern port:
+**Optional:** Choose the wire framing your node exposes:
 
 ```toml
 [wallet]
-port = 8323  # Modern stateless protocol (recommended)
-# port = 9323  # Legacy protocol (older nodes)
+port = 8323  # Legacy 8-bit framing, push behavior
+# port = 9323  # Stateless 16-bit mirror framing, same push behavior
 ```
 
 #### Step 3: Generate Falcon Keys (if not already done)
@@ -78,19 +78,12 @@ reward_address = "your_nxs_address_here"
 
 **Look for these log messages:**
 
-**Successful Stateless Connection:**
+**Successful Push-Lane Connection:**
 ```
 [Falcon Auth] ✅ Authentication successful
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ✅ Stateless protocol ACTIVE
-[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!
-```
-
-**Legacy Fallback (node doesn't support stateless):**
-```
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ⚠️  No response - node doesn't support stateless
-[Solo Protocol] ℹ️  Falling back to legacy GET_ROUND polling
+[Solo Protocol] LEGACY/STATELESS LANE: Using push protocol
+[Solo Push] Sending MINER_READY
+[Worker_manager] → GET_BLOCK sent
 ```
 
 ---
@@ -150,10 +143,10 @@ Check node logs for mining server startup:
 
 | Miner Version | Node Version | Protocol Used | Status |
 |---------------|--------------|---------------|--------|
-| NexusMiner 1.5+ | LLL-TAO 5.1.0+ (PR #170) | **Stateless** | ✅ Best performance |
-| NexusMiner 1.5+ | LLL-TAO < 5.1.0 | **Legacy** | ✅ Automatic fallback |
-| NexusMiner < 1.5 | LLL-TAO 5.1.0+ | **Legacy** | ⚠️ Update miner recommended |
-| NexusMiner < 1.5 | LLL-TAO < 5.1.0 | **Legacy** | ⚠️ Update both recommended |
+| Current NexusMiner | Current NamecoinGithub/LLL-TAO | **Push on 8323 or 9323** | ✅ Best performance |
+| Current NexusMiner | Node exposes 8323 only | **Legacy 8-bit push lane** | ✅ Same behavior, 8-bit framing |
+| Current NexusMiner | Node exposes 9323+ | **Stateless 16-bit push lane** | ✅ Same behavior, 16-bit framing |
+| Older miner/node | Pre-push protocol | **Unsupported beta path** | ⚠️ Update both before release |
 
 ---
 
@@ -228,16 +221,17 @@ privkey = "your_privkey_here"
 
 ### "Performance seems worse with new protocol"
 
-**Check that stateless is actually active:**
+**Check that push mode is active:**
 
 ```bash
 # Look for this in miner logs:
-grep "Stateless protocol ACTIVE" miner.log
+grep "Using push protocol" miner.log
 ```
 
 **If not active:**
-- Node may not support stateless (update node)
-- May be using legacy fallback (see logs)
+- Node may be outdated
+- Miner may be connected to a non-mining service/port
+- Wrong framing on the selected port should disconnect, not fall back
 
 **If active but slow:**
 - Check network latency to node
@@ -251,24 +245,19 @@ grep "Stateless protocol ACTIVE" miner.log
 ### Real-World Measurements
 
 **Network Traffic:**
-- Legacy: ~500 bytes/sec (continuous polling)
-- Stateless: ~100 bytes/block (push only)
-- **Reduction: 95%**
+- Legacy 8-bit lane: ~100 bytes/block (push only)
+- Stateless 16-bit lane: ~100 bytes/block (push only)
+- Difference: framing width only
 
 **Template Latency:**
-- Legacy: 1-5 seconds (poll interval)
-- Stateless: < 10ms (instant push)
-- **Improvement: 99%+**
+- Legacy 8-bit lane: < 10ms after push / immediate after initial GET_BLOCK
+- Stateless 16-bit lane: < 10ms after push / immediate after initial GET_BLOCK
 
 **CPU Overhead:**
-- Legacy: 1-2% (polling loop)
-- Stateless: < 0.1% (event-driven)
-- **Reduction: 95%**
+- Both lanes: event-driven
 
 **Stale Work:**
-- Legacy: 1-5 seconds worth per block
-- Stateless: < 10ms worth per block
-- **Reduction: 99%+**
+- Both lanes: near zero under normal push delivery
 
 ### Hash Rate Impact
 
@@ -283,25 +272,17 @@ grep "Stateless protocol ACTIVE" miner.log
 
 ---
 
-## Rollback Plan
+## Choosing a Lane
 
-If you need to revert to legacy protocol:
-
-### Option 1: Use Legacy Port
+If you need 8-bit framing:
 
 ```toml
 [wallet]
-port = 9323  # Force legacy protocol
+port = 8323  # Legacy 8-bit framing, same push behavior
 ```
 
-### Option 2: Use Older Miner Version
-
-```bash
-# Download specific older version
-wget https://github.com/Nexusoft/NexusMiner/releases/tag/v1.4.0
-```
-
-**Note:** Not recommended - stateless protocol is more efficient and secure.
+If you need 16-bit mirror framing, use `port = 9323`. Both lanes use the same
+push protocol and require explicit zero-length frames for zero-payload opcodes.
 
 ---
 

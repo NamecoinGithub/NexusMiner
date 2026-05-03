@@ -6,8 +6,10 @@
 > implementation uses the values documented in
 > [PROTOCOL_LANES.md](../../PROTOCOL_LANES.md) and
 > [push-notifications.md](push-notifications.md).  Push notifications are now
-> sent on **any** channel block (universal PoW tip push) and the miner refreshes
-> for two distinct reasons (`channel_advanced` and `tip_moved`).  Refer to
+> used on both legacy 8-bit and stateless 16-bit lanes; the lanes differ only by
+> wire opcode width/framing.  Push notifications are sent on **any** channel
+> block (universal PoW tip push) and the miner refreshes for two distinct
+> reasons (`channel_advanced` and `tip_moved`).  Refer to
 > [unified-tip-vs-channel-height.md](../mining/unified-tip-vs-channel-height.md)
 > for the authoritative description.
 
@@ -23,7 +25,7 @@
 
 ## Overview
 
-The stateless mining protocol is a modern push-notification based protocol that eliminates polling overhead and provides instant block updates. It represents a significant improvement over the legacy GET_ROUND polling protocol.
+The stateless mining protocol is a modern push-notification based protocol that eliminates polling overhead and provides instant block updates. The same push behavior is now used on the legacy 8-bit lane; the lane names describe framing, not polling-vs-push behavior.
 
 ### Miner / Node Responsibility Boundary
 
@@ -40,9 +42,9 @@ The stateless mining protocol is a modern push-notification based protocol that 
 
 ## Key Features
 
-✅ **Push Notifications** - Node pushes templates to miner (no polling)  
+✅ **Push Notifications** - Node pushes templates to miner on both lanes (no polling)  
 ✅ **Instant Updates** - NEW_BLOCK pushed when blockchain advances  
-✅ **Auto-Negotiation** - Automatic fallback to legacy protocol if unsupported  
+✅ **Port-Selected Framing** - 8323 uses 8-bit framing; 9323 uses 16-bit mirror framing  
 ✅ **Lower Latency** - Immediate template delivery after MINER_READY  
 ✅ **Reduced Network Traffic** - No periodic GET_ROUND polling required  
 ✅ **Session-Based** - Maintains persistent connection with keepalive
@@ -68,15 +70,18 @@ Miner                                    Node
   |                                       |
 ```
 
-### Stateless Protocol Negotiation
+### Push Readiness
 
 ```
 Miner                                    Node
   |                                       |
-  |--- MINER_READY (0xD007) ------------>|
-  |    (Indicates stateless support)     |
+  |--- MINER_READY --------------------->|
+  |    legacy 0xD8 / stateless 0xD0D8    |
   |                                       |
-  |<-- GET_BLOCK (0xD008) ---------------|
+  |--- GET_BLOCK ----------------------->|
+  |    legacy 0x81 / stateless 0xD081    |
+  |                                       |
+  |<-- GET_BLOCK / BLOCK_DATA -----------|
   |    [template data]                   |
   |    (Initial mining template)         |
   |                                       |
@@ -89,14 +94,18 @@ Miner                                    Node
   |                                       |
   |    ⛏️  Mining block...                 |
   |                                       |
-  |<-- NEW_BLOCK (0xD009) ---------------|
-  |    [template data]                   |
+  |<-- PRIME/HASH_BLOCK_AVAILABLE -------|
+  |    [height/difficulty metadata]      |
   |    (Pushed when chain advances)      |
+  |                                       |
+  |--- GET_BLOCK ----------------------->|
+  |<-- GET_BLOCK / BLOCK_DATA -----------|
+  |    [template data]                   |
   |                                       |
   |    ⛏️  Switch to new template          |
   |    ⛏️  Continue mining...              |
   |                                       |
-  |--- SUBMIT_BLOCK (0x0005) ----------->|
+  |--- SUBMIT_BLOCK -------------------->|
   |    [block data]                      |
   |    (Found valid block)               |
   |                                       |
@@ -104,20 +113,12 @@ Miner                                    Node
   |                                       |
 ```
 
-### Legacy Fallback (if node doesn't support stateless)
+### No Cross-Lane Fallback
 
 ```
-Miner                                    Node
-  |                                       |
-  |--- MINER_READY (0xD007) ------------>|
-  |                                       |
-  |    (No response - node doesn't       |
-  |     support stateless protocol)      |
-  |                                       |
-  |--- GET_ROUND (polling) ------------->|
-  |<-- BLOCK_DATA ----------------------|
-  |    (Traditional polling mode)        |
-  |                                       |
+8323 stays on 8-bit framing.
+9323 stays on 16-bit mirror framing.
+Wrong-lane packets are rejected/closed instead of falling back.
 ```
 
 ---
@@ -212,24 +213,25 @@ Offset | Size | Field          | Description
 
 ---
 
-### MINER_READY (0xD007)
+### MINER_READY (legacy 0xD8 / stateless 0xD0D8)
 
-**Stateless Protocol Signal**
+**Push Protocol Signal**
 
 ```
 Offset | Size | Field          | Description
 -------|------|----------------|----------------------------------
-(empty packet - just opcode)
+legacy:    [0xD8][00 00 00 00]
+stateless: [0xD0D8][00 00 00 00]
 ```
 
 **Purpose:**
-- Signals to node that miner supports stateless protocol
-- Node responds with GET_BLOCK if supported
-- No response = node doesn't support, fallback to legacy GET_ROUND
+- Signals to node that miner is ready for push template delivery
+- Used on both 8-bit legacy and 16-bit stateless lanes
+- Zero-length framing bytes are required
 
 ---
 
-### GET_BLOCK (0xD008)
+### GET_BLOCK (legacy 0x81 / stateless 0xD081)
 
 **Initial Template Push**
 
@@ -246,9 +248,9 @@ Offset | Size | Field          | Description
 
 ---
 
-### NEW_BLOCK (0xD009)
+### NEW_BLOCK (removed; use block-available + GET_BLOCK)
 
-**Updated Template Push**
+**Historical Updated Template Push**
 
 ```
 Offset | Size | Field          | Description
@@ -388,35 +390,34 @@ if (connection_lost) {
 
 ## Logging Output
 
-### Successful Stateless Connection
+### Successful Push-Lane Connection
 
 ```
 [Falcon Auth] ✅ Authentication successful
 [Falcon Auth]    Session ID: a1b2c3d4...
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ✅ Stateless protocol ACTIVE
-[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!
-[Solo Stateless]    Channel: 1 (Prime)
-[Solo Stateless]    Height: 4523891
+[Solo Protocol] LEGACY/STATELESS LANE: Using push protocol
+[Solo Push] Sending MINER_READY
+[Solo] ✨ GET_BLOCK template received!
+[Solo]    Channel: 1 (Prime)
+[Solo]    Height: 4523891
 [Mining] ⛏️  Started mining on template...
 ```
 
-### NEW_BLOCK Notification
+### Template Push Notification
 
 ```
-[Solo Stateless] 🔔 NEW_BLOCK (0xD009) notification received!
+[Solo Push] 🔔 PRIME/HASH_BLOCK_AVAILABLE notification received!
 [Solo Stateless]    New height: 4523892
 [Solo Stateless]    Switching to new template...
 [Mining] ⛏️  Restarted mining on new template
 ```
 
-### Legacy Fallback
+### Legacy 8-bit Push Lane
 
 ```
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ⚠️  No response - node doesn't support stateless
-[Solo Protocol] ℹ️  Falling back to legacy GET_ROUND polling
-[Legacy Mining] 🔄 Polling for template every 5 seconds...
+[Solo Protocol] LEGACY LANE: Using push protocol
+[Solo Push] Sending MINER_READY (0xD8)
+[Worker_manager] → GET_BLOCK sent
 ```
 
 ---
@@ -432,14 +433,14 @@ if (connection_lost) {
 | **CPU Overhead** | Minimal (event-driven) |
 | **Stale Work** | Near zero (instant updates) |
 
-### Legacy Polling Protocol
+### Legacy 8-bit Push Protocol
 
 | Metric | Value |
 |--------|-------|
-| **Template Latency** | 1-5 seconds (poll interval) |
-| **Network Traffic** | ~500 bytes/sec (continuous polling) |
-| **CPU Overhead** | Higher (polling loop) |
-| **Stale Work** | 1-5 seconds worth per block |
+| **Template Latency** | < 10ms after push / immediate after initial GET_BLOCK |
+| **Network Traffic** | ~100 bytes/block (push only) |
+| **CPU Overhead** | Minimal (event-driven) |
+| **Stale Work** | Near zero (instant updates) |
 
 **Efficiency Gain:** ~95% reduction in network traffic, <90% reduction in template latency
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of the push notification protocol (LLL-TAO PR #156) in NexusMiner. This replaces the polling-based GET_ROUND with event-driven block notifications.
+This document describes the implementation of the push notification protocol (LLL-TAO PR #156) in NexusMiner. This replaces the polling-based GET_ROUND with event-driven block notifications on both the legacy 8-bit lane and the stateless 16-bit lane.
 
 ## Motivation
 
@@ -141,7 +141,7 @@ On notification (PRIME/HASH_BLOCK_AVAILABLE):
       Every PUSH = unified tip moved = hashPrevBlock changed
       GetBlockDedupGuard handles true duplicates (100ms burst + unified height match)
 
-No polling needed! (GET_ROUND is backup only)
+No polling needed for template flow; GET_ROUND is diagnostic/recovery telemetry.
 ```
 
 ### Lifeline Rule
@@ -185,7 +185,7 @@ constexpr size_t PUSH_NOTIFICATION_PAYLOAD_SIZE = 12;
 
 ### Null Safety
 - All connection transmit calls checked for null
-- Graceful fallback if MINER_READY fails
+- Explicit failure if MINER_READY cannot be framed or queued
 
 ### Validation
 - Packet length validation (12 bytes expected)
@@ -275,17 +275,18 @@ Tier 3: full dedup   → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE (both guards ac
 - **After:** Receive notifications only when any channel finds a block (universal PoW tip push)
 - **Result:** Significant reduction in polling overhead; push events are still lightweight (12 bytes)
 
-## Backward Compatibility
+## Lane Compatibility
 
-### Fallback Mechanism
-If MINER_READY fails, the miner falls back to:
-1. Request work directly via GET_BLOCK
-2. Use existing GET_ROUND polling if available
+### Shared Push Mechanism
+After authentication and `CHANNEL_ACK`, both lanes:
+1. Send `MINER_READY` using the active lane's framing.
+2. Send/request `GET_BLOCK` for the first template if no valid template exists.
+3. Process pushed block-available notifications and template delivery.
 
-### No Breaking Changes
-- Existing GET_ROUND polling still supported
-- New opcodes are additive
-- Works with both old and new nodes
+### Required Framing
+- Legacy lane: `[opcode:1][length:4 BE][payload]`
+- Stateless lane: `[opcode:2 BE][length:4 BE][payload]`
+- Zero-payload opcodes must include `length = 0`; bare headers are invalid beta wire format.
 
 ## Testing
 

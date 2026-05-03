@@ -85,22 +85,18 @@ ip = "192.168.1.100"
 **Valid Range:** 1-65535  
 **Description:** Mining port on the Nexus node.
 
-**Stateless Mining (Modern Protocol):**
-- Port `8323`: Stateless mining protocol (modern nodes with LLL-TAO PR #170)
-- Supports push notifications (GET_BLOCK/NEW_BLOCK)
-- No polling required
-
-**Legacy Mining:**
-- Port `9323`: Legacy mining protocol (older nodes)
-- Uses GET_ROUND polling
+**Mining Lanes:**
+- Port `8323`: Legacy 8-bit framing with modern push behavior
+- Port `9323`: Stateless 16-bit mirror framing with the same push behavior
+- Both lanes send `MINER_READY`, use `GET_BLOCK` for template delivery, and require explicit zero-length frames for zero-payload opcodes
 
 **Examples:**
 ```toml
-# Modern stateless protocol
+# Legacy 8-bit push lane
 [wallet]
 port = 8323
 
-# Legacy protocol
+# Stateless 16-bit push lane
 [wallet]
 port = 9323
 ```
@@ -651,22 +647,22 @@ level = 2
 
 ### Stateless Mining Protocol
 
-**Auto-Negotiation:**
-- Miner automatically detects node capabilities
-- Sends `MINER_READY` (0xD007) after authentication
-- If node supports stateless: receives `GET_BLOCK` (0xD008) push
-- If node doesn't support: falls back to legacy `GET_ROUND` polling
+**Push Readiness:**
+- Miner selects framing from the configured port
+- Sends `MINER_READY` after authentication (`0xD8` on 8323, `0xD0D8` on 9323)
+- Sends/receives `GET_BLOCK` for template delivery using the selected lane framing
+- Wrong-lane packets disconnect instead of falling back
 
 **Configuration:**
 - No manual configuration needed
-- Works with both modern and legacy nodes
-- Automatic protocol selection
+- Port `8323` uses legacy 8-bit framing with push behavior
+- Port `9323` uses stateless 16-bit mirror framing with the same push behavior
 
 **Verification:**
 ```
-[Solo Protocol] Attempting stateless protocol (MINER_READY 0xD007)
-[Solo Protocol] ✅ Stateless protocol ACTIVE
-[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD008) received!
+[Solo Protocol] LEGACY/STATELESS LANE: Using push protocol
+[Solo Push] Sending MINER_READY
+[Solo] ✨ GET_BLOCK template received!
 ```
 
 **See:** [docs/current/mining-protocols/stateless-mining.md](../current/mining-protocols/stateless-mining.md)

@@ -523,6 +523,7 @@ private:
     void on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    bool activate_push_lane_after_channel_ack(std::shared_ptr<network::Connection> connection);
 
     std::uint8_t m_channel;
     std::shared_ptr<spdlog::logger> m_logger;

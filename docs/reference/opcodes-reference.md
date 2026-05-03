@@ -52,6 +52,7 @@ MINER_READY (216)  →  0xD0D8
 - **Legacy Port:** All packets use 8-bit legacy opcodes (0x00-0xFF)
 - **No Fallback:** Wrong framing type on a port results in disconnection
 - **Detection:** Protocol mode determined by connected port at connection time
+- **Behavior Parity:** Both ports use the same push flow (`MINER_READY`, initial `GET_BLOCK`, pushed template updates); only framing differs
 
 **Wire Format Comparison:**
 ```
@@ -67,6 +68,9 @@ Stateless Packet:
 │(2 bytes)│ (4 bytes) │ (variable) │
 └────────┴────────────┴────────────┘
 ```
+
+Zero-payload opcodes on both lanes MUST include the 4-byte big-endian zero length.
+Bare-header packets are not valid beta wire format.
 
 ---
 
@@ -221,43 +225,46 @@ The following opcodes were removed in the mirror-mapped protocol as they are now
 **Packet Format:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Opcode (2)     │ 0xD007                                 │
+│ Opcode         │ legacy 0xD8 or stateless 0xD0D8         │
+├─────────────────────────────────────────────────────────┤
+│ Length (4)     │ 0                                      │
 └─────────────────────────────────────────────────────────┘
-(Empty packet - just opcode)
+(Explicit zero-length frame; bare headers are invalid)
 ```
 
 **Purpose:**
-- Indicates miner supports stateless push protocol
-- Node responds with GET_BLOCK (0xD008) OR BLOCK_DATA (0x00) if supported
-- No response after 5s timeout = fallback to legacy GET_ROUND polling
+- Indicates miner is ready for push template delivery
+- Node responds with GET_BLOCK / BLOCK_DATA using the active lane's framing
+- No cross-lane fallback is attempted
 
 **Response Handling (NexusMiner v1.5+):**
-- **Modern nodes:** Send GET_BLOCK (0xD008) with 228-byte template
-- **Legacy nodes:** Send BLOCK_DATA (0x00) with 216-byte template
-- **Miner accepts both:** Automatically activates stateless protocol on either response
-- **Backward compatible:** Works with all node versions
+- **Stateless lane:** 16-bit mirror-framed GET_BLOCK (0xD081) with 228-byte template
+- **Legacy lane:** 8-bit-framed GET_BLOCK/BLOCK_DATA with the same template semantics
+- **Miner accepts only the configured lane framing:** wrong-lane packets are rejected
 
 **See:** [docs/current/mining-protocols/stateless-mining.md](stateless-mining.md)
 
 ---
 
-#### GET_BLOCK (0xD008)
-**Direction:** Node → Miner  
-**Description:** Initial mining template (push notification)  
-**Introduced:** v1.5+
+#### GET_BLOCK (legacy 0x81 / stateless 0xD081)
+**Direction:** Miner ↔ Node  
+**Description:** Initial template request and template delivery in push mode  
+**Introduced:** Current mirror-mapped push protocol
 
 **Packet Format:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Opcode (2)     │ 0xD008                                 │
+│ Opcode         │ legacy 0x81 or stateless 0xD081        │
 ├─────────────────────────────────────────────────────────┤
-│ Template Data  │ Mining template (variable length)      │
-│ (variable)     │ Format matches legacy BLOCK_DATA       │
+│ Length (4)     │ 0 for request, 228 for template data   │
+├─────────────────────────────────────────────────────────┤
+│ Template Data  │ 12 metadata + 216 Tritium block        │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **Trigger:**
-- Sent immediately after receiving MINER_READY
+- Miner sends it after MINER_READY when it needs the first template
+- Node sends it/template data immediately after MINER_READY or on push updates
 - Contains current best template for mining
 - Miner should start mining on this template
 
@@ -265,22 +272,20 @@ The following opcodes were removed in the mirror-mapped protocol as they are now
 - Block version
 - Previous block hash
 - Merkle root
-- Timestamp
 - Bits (difficulty)
 - Nonce range
 - Channel number
 
 ---
 
-#### NEW_BLOCK (0xD009)
+#### NEW_BLOCK (removed)
 **Direction:** Node → Miner  
-**Description:** Updated mining template (push on blockchain advance)  
-**Introduced:** v1.5+
+**Description:** Historical sequential opcode; replaced by GET_BLOCK/template delivery and block-available push notifications.
 
 **Packet Format:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Opcode (2)     │ 0xD009                                 │
+│ Opcode         │ removed                                │
 ├─────────────────────────────────────────────────────────┤
 │ Template Data  │ Updated mining template                │
 │ (variable)     │ Format matches GET_BLOCK               │
@@ -288,9 +293,8 @@ The following opcodes were removed in the mirror-mapped protocol as they are now
 ```
 
 **Trigger:**
-- Pushed when blockchain advances (new block found by network)
-- Pushed when template becomes stale
-- Miner should immediately switch to new template
+- Use `PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE` followed by `GET_BLOCK`
+- Miner should immediately switch to the new template when delivered
 
 **Performance:**
 - Typical latency: < 10ms from block discovery
@@ -301,23 +305,24 @@ The following opcodes were removed in the mirror-mapped protocol as they are now
 
 ## Legacy Mining Opcodes
 
-### GET_ROUND (0x05)
+### GET_ROUND (0x85)
 **Direction:** Miner → Node  
-**Description:** Poll for mining template (legacy protocol)  
+**Description:** Diagnostic/recovery round-status probe; not the normal template flow  
 **Type:** uint8_t
 
 **Packet Format:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Opcode (1)     │ 0x05                                   │
+│ Opcode (1)     │ 0x85                                   │
+├─────────────────────────────────────────────────────────┤
+│ Length (4)     │ 0                                      │
 └─────────────────────────────────────────────────────────┘
-(Empty packet - just opcode)
+(Explicit zero-length frame)
 ```
 
 **Usage:**
-- Used when node doesn't support stateless protocol
-- Miner polls periodically (typically every 1-5 seconds)
-- Node responds with BLOCK_DATA
+- Used for round/status telemetry and recovery decisions
+- Template flow uses MINER_READY + GET_BLOCK on both lanes
 
 **NEW_ROUND Response Format (16 bytes — NamecoinGithub/LLL-TAO fork only):**
 ```
@@ -510,30 +515,23 @@ keepalive_interval = 24  # Hours (1-168)
 
 ---
 
-## Protocol Version Detection
+## Protocol Lane Selection
 
-### Auto-Detection Flow
+### Port-Selected Flow
 
 ```
 1. Miner connects to node
-2. Miner sends MINER_AUTH (0xD000)
-3. Node responds with MINER_AUTH_RESPONSE (0xD001)
-4. Miner sends MINER_READY (0xD007)
-5. 
-   a) If node responds with GET_BLOCK (0xD008):
-      → Stateless protocol active ✅ (Modern format)
-   
-   b) If node responds with BLOCK_DATA (0x00):
-      → Stateless protocol active ✅ (Legacy format)
-   
-   c) If no response after 5-second timeout:
-      → Fallback to legacy GET_ROUND (0x05) polling
+2. Remote port selects framing:
+   a) 8323 → legacy 8-bit opcodes
+   b) 9323+ → stateless 16-bit mirror opcodes
+3. Miner authenticates on that lane
+4. Miner sends MINER_READY on that lane
+5. Miner sends/receives GET_BLOCK for template delivery on that lane
 ```
 
-**Detection Timeout:** 5 seconds (configurable)
+**Detection Timeout:** none. The lane is immutable for the connection.
 
-**NexusMiner v1.5+ Fix:** Accepts both GET_BLOCK and BLOCK_DATA after MINER_READY,
-enabling stateless protocol with both modern and legacy node implementations.
+**Current beta rule:** wrong-lane framing is a protocol violation and closes the connection.
 
 ---
 

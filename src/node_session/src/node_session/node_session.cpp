@@ -24,6 +24,23 @@ const char* lane_name(ProtocolLane lane)
     }
 }
 
+std::string format_prefix_hex(const std::deque<uint8_t>& bytes, std::size_t max_bytes = 8)
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    const std::size_t count = std::min(bytes.size(), max_bytes);
+    out.reserve(count * 3);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            out.push_back(' ');
+        }
+        const auto b = bytes[i];
+        out.push_back(hex[(b >> 4) & 0x0F]);
+        out.push_back(hex[b & 0x0F]);
+    }
+    return out;
+}
+
 } // namespace
 
 NodeSession::NodeSession(
@@ -600,6 +617,18 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
             break;
         }
         if (parse_result == ParseResult::MALFORMED) {
+            if (looks_like_cross_lane_frame_prefix(buffer_shared, 0, lane_kind)) {
+                m_logger->error("[NodeSession:{}] Cross-lane packet prefix on {} connection "
+                                "(lane={}, prefix=[{}]) — closing instead of byte-drop resync",
+                                m_node_label, descriptor.label, lane_name(lane_kind),
+                                format_prefix_hex(accumulator));
+                accumulator.clear();
+                if (connection) {
+                    connection->close();
+                }
+                return;
+            }
+
             const bool is_zero_pad_byte = !accumulator.empty() && accumulator.front() == 0x00;
             const auto now = std::chrono::steady_clock::now();
             const bool in_post_accept_window =
