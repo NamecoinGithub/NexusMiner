@@ -20,6 +20,7 @@
 #include "../miner_keys.hpp"
 #include "hex_utils.h"
 #include <openssl/sha.h>
+#include <asio/error.hpp>
 #include <chrono>
 #include <algorithm>
 #include <sstream>
@@ -163,7 +164,8 @@ static std::string get_channel_name(uint32_t channel) {
 }
 
 Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collector,
-           std::shared_ptr<NodeSessionContext> session_context)
+           std::shared_ptr<NodeSessionContext> session_context,
+           std::shared_ptr<asio::io_context> io_context)
 : m_channel{channel}
 , m_logger{spdlog::get("logger")}
 , m_current_height{0}
@@ -192,9 +194,16 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
 , m_template_unified_height{0}  // No template yet
 , m_protocol_lane{ProtocolLane::UNKNOWN}  // Will be determined from connection port
 , m_dedup_guard{spdlog::get("logger")}
+, m_io_context{std::move(io_context)}
 {
     if (!m_logger) {
         m_logger = spdlog::default_logger();
+    }
+    // Initialise the 2s recovery-debounce timer when an io_context is available.
+    // Without one (test environments that only pass 3 args), the timer is null and
+    // on_get_round_response falls back to the legacy immediate-GET_BLOCK behaviour.
+    if (m_io_context) {
+        m_recovery_timer = std::make_unique<asio::steady_timer>(*m_io_context);
     }
    // Log constructor call with requested channel value
     m_logger->info("Solo::Solo: ctor called, channel={}", static_cast<int>(m_channel));
@@ -2319,6 +2328,12 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
             uint16_t actual_port = remote_ep.port();
             m_logger->info("[Solo] Block accepted on connection {}:{}", remote_addr, actual_port);
         }
+
+        // Record BLOCK_ACCEPTED timestamp and cancel any pending NEW_ROUND recovery
+        // debounce.  A fresh BLOCK_DATA push is about to arrive — no need to also
+        // fire a deferred recovery GET_BLOCK scheduled by a concurrent NEW_ROUND.
+        m_last_block_accepted_time = std::chrono::steady_clock::now();
+        cancel_recovery_timer("BLOCK_ACCEPTED");
         
         // Reset dedup state so the follow-up GET_BLOCK is not suppressed by stale
         // height values — the node has not sent a new push notification yet.
@@ -2549,6 +2564,109 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW_ROUND recovery debounce helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Solo::schedule_recovery_get_block(
+    std::shared_ptr<network::Connection> connection,
+    uint32_t unified_height)
+{
+    const auto now = std::chrono::steady_clock::now();
+
+    auto ms_since = [&](std::chrono::steady_clock::time_point tp) -> int64_t {
+        if (tp == std::chrono::steady_clock::time_point::min()) return -1;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now - tp).count();
+    };
+
+    const int64_t since_accept_ms = ms_since(m_last_block_accepted_time);
+    const int64_t since_push_ms   = ms_since(m_last_push_received_time);
+
+    if (!m_recovery_timer) {
+        // No io_context supplied (e.g. unit tests without a timer) — fall back
+        // to the legacy immediate behaviour so pre-existing tests are unaffected.
+        m_logger->info("[NEW_ROUND] No debounce timer (no io_context) — recovery GET_BLOCK firing immediately "
+                       "(since_accept={}ms, since_push={}ms)",
+                       since_accept_ms, since_push_ms);
+        if (connection) {
+            request_and_queue_get_block(connection,
+                                        GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                        "[Solo GET_ROUND] Template refresh GET_BLOCK (immediate)");
+        }
+        return;
+    }
+
+    m_logger->info(
+        "[NEW_ROUND] Template invalidated; deferring recovery GET_BLOCK for {}ms "
+        "(since_block_accepted={}ms, since_push={}ms)",
+        std::chrono::duration_cast<std::chrono::milliseconds>(kRecoveryDebounceWindow).count(),
+        since_accept_ms,
+        since_push_ms);
+
+    m_recovery_deferred_at = now;
+
+    // Cancel any prior pending recovery — coalesce rapid NEW_ROUND bursts so that
+    // only the LAST NEW_ROUND in a burst starts the 2s countdown.
+    m_recovery_timer->cancel();
+    m_recovery_timer->expires_after(kRecoveryDebounceWindow);
+    m_recovery_timer->async_wait(
+        [this, conn = connection]
+        (const asio::error_code& ec) {
+            if (ec == asio::error::operation_aborted) {
+                // Cancelled — either a newer NEW_ROUND superseded us, or a
+                // PUSH / BLOCK_ACCEPTED arrived and called cancel_recovery_timer().
+                return;
+            }
+            if (ec) {
+                m_logger->warn("[NEW_ROUND] Recovery timer error: {}", ec.message());
+                return;
+            }
+            // 2 seconds elapsed — did a template arrive in the meantime?
+            if (m_template_interface && m_template_interface->has_valid_template()) {
+                m_logger->info(
+                    "[NEW_ROUND] Recovery NOT fired: template installed during {}ms debounce",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        kRecoveryDebounceWindow).count());
+                m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
+                return;
+            }
+            m_logger->info(
+                "[NEW_ROUND] Recovery GET_BLOCK firing after {}ms debounce: "
+                "no push arrived, template still invalid",
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    kRecoveryDebounceWindow).count());
+            m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
+            ++m_recovery_fired_count;
+            // Prefer the connection captured when NEW_ROUND fired; fall back to
+            // the stored session connection if the first one expired.
+            auto active_conn = conn ? conn : m_connection;
+            if (active_conn) {
+                request_and_queue_get_block(active_conn,
+                                            GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                            "[Solo GET_ROUND] Recovery GET_BLOCK (2s debounce)");
+            } else {
+                m_logger->warn("[NEW_ROUND] Recovery GET_BLOCK: no connection available after debounce");
+            }
+        });
+}
+
+void Solo::cancel_recovery_timer(const char* handler_name)
+{
+    if (!m_recovery_timer) return;
+    if (m_recovery_deferred_at == std::chrono::steady_clock::time_point::min()) return;
+
+    const auto cancelled = m_recovery_timer->cancel();
+    if (cancelled > 0) {
+        const auto deferred_age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_recovery_deferred_at).count();
+        m_logger->info(
+            "[{}] Cancelling pending NEW_ROUND recovery GET_BLOCK "
+            "(deferred {}ms ago — push won the race)",
+            handler_name, deferred_age_ms);
+    }
+    m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
+}
+
 void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
     const char* lane_label = get_lane_name(m_protocol_lane);
@@ -2767,8 +2885,27 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // so that any pending template channel-height metadata is finalized.
         bool template_valid = sync_template_state(unified_height, channel_height);
 
+        // ── Self-induced NEW_ROUND tagging ──────────────────────────────────────────
+        // A NEW_ROUND at the same height as our last submission that arrives within
+        // 2s of a BLOCK_ACCEPTED is almost certainly our own block advancing the chain.
+        // Log this so post-mortem analysis is a one-grep job (grep "SELF-induced").
+        {
+            const auto since_accept_ms =
+                (m_last_block_accepted_time == std::chrono::steady_clock::time_point::min())
+                ? int64_t{-1}
+                : std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - m_last_block_accepted_time).count();
+            const bool likely_self_induced =
+                (unified_height == m_last_submitted_height) &&
+                (since_accept_ms >= 0) && (since_accept_ms < 2000);
+            m_logger->info("[NEW_ROUND] {}-induced: unified_height={}, since_accept={}ms",
+                           likely_self_induced ? "SELF" : "external",
+                           unified_height, since_accept_ms);
+        }
+
         // CRITICAL FIX: After NEW_ROUND, check if we have a valid template
-        // If not, request one via GET_BLOCK (legacy fallback behavior).
+        // If not, defer a recovery GET_BLOCK by 2s so that the BLOCK_DATA push that
+        // the node almost always sends within ~50ms has a chance to arrive first.
         // Skip if a GET_BLOCK was already sent in this handler (staleness check above)
         // — the in-flight response will provide the replacement template.
         // Also skip if another handler (e.g. PUSH) already has a GET_BLOCK in-flight
@@ -2793,24 +2930,18 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         
         if (needs_template && !get_block_sent_in_handler && !get_block_already_in_flight) {
             if (!template_valid && m_template_interface) {
-                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (template stale → GET_BLOCK)",
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
+                    "(template stale → deferred recovery GET_BLOCK in 2s)",
                     get_channel_name(m_channel));
             } else {
-                m_logger->info("[Solo GET_ROUND] ℹ️  NEW_ROUND received but no template - requesting work");
+                m_logger->info("[Solo GET_ROUND] 📭 NEW_ROUND received but no template — "
+                               "deferring recovery GET_BLOCK for 2s");
                 m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
             }
-            
-            // Request template via legacy GET_BLOCK
-            if (connection) {
-                if (request_and_queue_get_block(connection,
-                                                GetBlockReason::GET_ROUND_NO_TEMPLATE,
-                                                "[Solo GET_ROUND] Template refresh GET_BLOCK")) {
-                    get_block_sent_in_handler = true;
-                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
-                } else {
-                    m_logger->debug("[Solo GET_ROUND] GET_BLOCK request suppressed by dedup guard (expected if recent request pending)");
-                }
-            }
+            schedule_recovery_get_block(connection, unified_height);
+            // Note: get_block_sent_in_handler stays false — we have not sent a GET_BLOCK
+            // yet, only scheduled a deferred one.  The height-parity backup path below
+            // still guards on has_valid_template() so it won't double-fire.
         } else if (needs_template && get_block_sent_in_handler) {
             m_logger->debug("[Solo GET_ROUND] Template needed but GET_BLOCK already sent in this handler — waiting for response");
         } else if (needs_template && get_block_already_in_flight) {
@@ -3828,6 +3959,12 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
                         "node will auto-send fresh BLOCK_DATA",
             (channel == m_channel) ? "same" : "cross");
     }
+
+    // Record push timestamp and cancel any pending NEW_ROUND recovery debounce.
+    // A PUSH arriving means the node has signalled a new block — BLOCK_DATA will
+    // follow automatically, so a deferred recovery GET_BLOCK is no longer needed.
+    m_last_push_received_time = std::chrono::steady_clock::now();
+    cancel_recovery_timer(push_opcode_name);
 }
 
 void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)

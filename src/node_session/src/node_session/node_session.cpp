@@ -135,7 +135,8 @@ std::shared_ptr<protocol::Solo> NodeSession::ensure_protocol(LaneSlot slot)
     auto descriptor = lane(slot);
     if (!*descriptor.protocol) {
         uint8_t channel = (m_config.get_mining_mode() == config::Mining_mode::PRIME) ? 1U : 2U;
-        *descriptor.protocol = std::make_shared<protocol::Solo>(channel, m_stats_collector, m_session_context);
+        *descriptor.protocol = std::make_shared<protocol::Solo>(
+            channel, m_stats_collector, m_session_context, m_io_context);
     }
 
     sync_protocol_state(slot);
