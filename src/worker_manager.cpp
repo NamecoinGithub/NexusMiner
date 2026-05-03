@@ -1,5 +1,6 @@
 #include "worker_manager.hpp"
 #include "worker/template_feed.hpp"
+#include "worker/node_shutdown_policy.hpp"
 #include "colin_agent.hpp"
 #include "cpu/worker_hash.hpp"
 
@@ -888,10 +889,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
             [self = weak_from_this()](uint8_t reason) {
                 auto mgr = self.lock();
                 if (!mgr) return;
-
-                mgr->m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02X}) — stopping workers",
-                    reason);
-                mgr->stop_all_workers();
+                mgr->handle_node_shutdown(reason);
             }
         );
         m_logger->info("[Worker_manager] Node shutdown handler registered");
@@ -1250,6 +1248,71 @@ void Worker_manager::enter_terminal_degraded_mode_internal(int signal_number, co
                            reason ? reason : "unknown");
     }
     stop();
+}
+
+void Worker_manager::handle_node_shutdown(uint8_t reason)
+{
+    m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02X})", reason);
+
+    const auto action = decide_node_shutdown_action(m_config.has_failover());
+    if (action == NodeShutdownAction::FULL_STOP)
+    {
+        m_logger->critical("[Worker_manager] NODE_SHUTDOWN received and no failover node is configured — full stop");
+        enter_terminal_degraded_mode_internal(0, "node_shutdown_no_failover");
+        return;
+    }
+
+    network::Endpoint standby_endpoint;
+    bool switch_to_failover = !m_using_failover;
+    if (switch_to_failover)
+    {
+        standby_endpoint = m_failover_endpoint;
+        if (!standby_endpoint.is_valid())
+        {
+            m_logger->critical("[Worker_manager] NODE_SHUTDOWN requested failover, but failover endpoint is invalid — full stop");
+            enter_terminal_degraded_mode_internal(0, "node_shutdown_invalid_failover");
+            return;
+        }
+
+        m_logger->warn("[Worker_manager] NODE_SHUTDOWN on primary — switching immediately to failover {}",
+                       standby_endpoint.to_string());
+    }
+    else
+    {
+        standby_endpoint = m_primary_endpoint;
+        if (!standby_endpoint.is_valid())
+        {
+            m_logger->critical("[Worker_manager] NODE_SHUTDOWN on failover, but primary endpoint is invalid — full stop");
+            enter_terminal_degraded_mode_internal(0, "node_shutdown_invalid_primary_standby");
+            return;
+        }
+
+        m_logger->warn("[Worker_manager] NODE_SHUTDOWN on failover — switching immediately back to primary {}",
+                       standby_endpoint.to_string());
+    }
+
+    stop_all_workers();
+    ++m_session_generation;
+    transition_to(RecoveryPhase::RECONNECTING, "node_shutdown_standby_switch");
+
+    if (m_primary_node_session) {
+        m_primary_node_session->reset();
+    }
+
+    m_using_failover = switch_to_failover;
+    m_primary_fail_count = 0;
+    m_connection_retry_count = 0;
+    m_connection_backoff.reset();
+    m_node_keepalive_interval_hours.store(0);
+    if (m_using_failover) {
+        m_failover_activated_at = std::chrono::steady_clock::now();
+    } else {
+        m_failover_activated_at = {};
+    }
+    m_sim_link.set_failover_active(m_using_failover, standby_endpoint.to_string());
+
+    m_logger->warn("[Worker_manager] NODE_SHUTDOWN standby reconnect scheduled immediately");
+    m_timer_manager.start_connection_retry_timer(0, shared_from_this(), standby_endpoint);
 }
 
 uint16_t Worker_manager::get_effective_keepalive_interval() const

@@ -96,6 +96,24 @@ if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
         gpu LLC worker LLP stats config TAO spdlog::spdlog asio)
 
     add_test(NAME worker_hash_integration_test COMMAND worker_hash_integration_test)
+
+    # Prime-channel vOffsets regression test for the host-stubs preset.  This is
+    # intentionally CUDA-free and does not require WITH_PRIME because it compiles
+    # the shared prime_validation.cpp path directly.
+    add_executable(prime_voffsets_length8_host_stubs_test
+        "test/prime_voffsets_length8_host_stubs_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/cpu/src/cpu/prime_validation.cpp")
+
+    target_include_directories(prime_voffsets_length8_host_stubs_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/cpu/inc
+        ${CMAKE_SOURCE_DIR}/src/LLC/inc
+        ${CMAKE_SOURCE_DIR}/src/mining
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+
+    target_link_libraries(prime_voffsets_length8_host_stubs_test
+        LLC spdlog::spdlog)
+
+    add_test(NAME prime_voffsets_length8_host_stubs_test COMMAND prime_voffsets_length8_host_stubs_test)
 endif()
 
 if (WITH_GPU_AMD)

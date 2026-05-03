@@ -166,6 +166,7 @@ private:
 
     void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
     void enter_terminal_degraded_mode_internal(int signal_number, const char* reason);
+    void handle_node_shutdown(uint8_t reason);
 
     // ── State machine transition API ───────────────────────────────────────────
     /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
