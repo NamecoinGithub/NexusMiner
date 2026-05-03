@@ -111,7 +111,7 @@ if(WITH_GPU_HOST_STUBS AND NOT WITH_GPU_CUDA)
         ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 
     target_link_libraries(prime_voffsets_length8_host_stubs_test
-        LLC spdlog::spdlog)
+        NexusMiner_platform LLC spdlog::spdlog)
 
     add_test(NAME prime_voffsets_length8_host_stubs_test COMMAND prime_voffsets_length8_host_stubs_test)
 endif()
