@@ -149,48 +149,48 @@ void test_genesis_validation() {
 }
 
 void test_swap_genesis_word_order() {
-    // Values taken directly from live miner logs (screenshot 2026-05-04):
-    //   reward_address (display/GetHex order):
+    // Historical context (LLL-TAO PR #578):
+    //
+    // Before LLL-TAO PR #578 the node emitted the session genesis via
+    // base_uint::GetBytes() which serialises pn[0..7] LSW-first — opposite to the
+    // GetHex() / display order used by 'system/get/info'.  NexusMiner was compensating
+    // with swap_genesis_word_order() in the SESSION_START handler.
+    //
+    // LLL-TAO PR #578 fixed the node to emit genesis in display/MSW-first order.
+    // The solo.cpp comparison now works directly (no swap).  These tests document the
+    // word-order invariant and confirm the utility is still mathematically correct.
+    //
+    // Values from live miner logs (screenshot 2026-05-04):
+    //   display order (GetHex / reward_address / 'system/get/info'):
     //     a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122
-    //   node session genesis (wire/GetBytes order, echoed in SESSION_START):
+    //   old LSW-first wire order (GetBytes() / pre-PR#578 SESSION_START):
     //     308cd12245ac99a84395ea8fcd33d31582b167cabca5388393ca1c80a174011c
-    // These are the same 256-bit value with 8 uint32_t words in opposite order.
+    // Both represent the same 256-bit integer with 8 uint32_t words in opposite order.
 
-    std::cout << "\nTest 20: swap_genesis_word_order - known display-vs-wire pair" << std::endl;
+    const std::vector<uint8_t> display_bytes = {
+        0xa1,0x74,0x01,0x1c, 0x93,0xca,0x1c,0x80,
+        0xbc,0xa5,0x38,0x83, 0x82,0xb1,0x67,0xca,
+        0xcd,0x33,0xd3,0x15, 0x43,0x95,0xea,0x8f,
+        0x45,0xac,0x99,0xa8, 0x30,0x8c,0xd1,0x22
+    };
+    const std::vector<uint8_t> lsw_first_bytes = {
+        0x30,0x8c,0xd1,0x22, 0x45,0xac,0x99,0xa8,
+        0x43,0x95,0xea,0x8f, 0xcd,0x33,0xd3,0x15,
+        0x82,0xb1,0x67,0xca, 0xbc,0xa5,0x38,0x83,
+        0x93,0xca,0x1c,0x80, 0xa1,0x74,0x01,0x1c
+    };
+
+    std::cout << "\nTest 20: swap_genesis_word_order - known display-vs-LSW-first pair" << std::endl;
     {
-        // Display-order bytes (from hex_decode_genesis_hash of the configured reward_address)
-        const std::vector<uint8_t> display_bytes = {
-            0xa1,0x74,0x01,0x1c, 0x93,0xca,0x1c,0x80,
-            0xbc,0xa5,0x38,0x83, 0x82,0xb1,0x67,0xca,
-            0xcd,0x33,0xd3,0x15, 0x43,0x95,0xea,0x8f,
-            0x45,0xac,0x99,0xa8, 0x30,0x8c,0xd1,0x22
-        };
-        // Wire-order bytes (GetBytes() / SESSION_START echo — LSW word first)
-        const std::vector<uint8_t> wire_bytes = {
-            0x30,0x8c,0xd1,0x22, 0x45,0xac,0x99,0xa8,
-            0x43,0x95,0xea,0x8f, 0xcd,0x33,0xd3,0x15,
-            0x82,0xb1,0x67,0xca, 0xbc,0xa5,0x38,0x83,
-            0x93,0xca,0x1c,0x80, 0xa1,0x74,0x01,0x1c
-        };
-
-        // swap(wire) == display
-        const auto swapped = genesis_utils::swap_genesis_word_order(wire_bytes);
+        // swap(LSW-first) == display
+        const auto swapped = genesis_utils::swap_genesis_word_order(lsw_first_bytes);
         test_assert(swapped == display_bytes,
-                    "swap_genesis_word_order(wire) == display bytes");
+                    "swap_genesis_word_order(LSW-first) == display bytes");
 
-        // swap(display) == wire  (function is its own inverse)
+        // swap(display) == LSW-first  (function is its own inverse)
         const auto swapped_back = genesis_utils::swap_genesis_word_order(display_bytes);
-        test_assert(swapped_back == wire_bytes,
-                    "swap_genesis_word_order(display) == wire bytes (inverse property)");
-
-        // Regression: after swap, reward_bytes == node_genesis_display (no false mismatch)
-        const auto reward_bytes =
-            genesis_utils::hex_decode_genesis_hash(
-                "a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122");
-        const auto node_genesis_display =
-            genesis_utils::swap_genesis_word_order(wire_bytes);
-        test_assert(reward_bytes == node_genesis_display,
-                    "hex_decoded reward_address == swap(node wire bytes) — no false mismatch");
+        test_assert(swapped_back == lsw_first_bytes,
+                    "swap_genesis_word_order(display) == LSW-first bytes (inverse property)");
     }
 
     std::cout << "\nTest 21: swap_genesis_word_order - round-trip identity" << std::endl;
@@ -210,6 +210,28 @@ void test_swap_genesis_word_order() {
         std::vector<uint8_t> empty;
         test_assert(genesis_utils::swap_genesis_word_order(empty) == empty,
                     "Empty input returned unchanged");
+    }
+
+    // ------------------------------------------------------------------
+    // Test 23: Post-LLL-TAO-PR#578 wire-contract pin
+    //
+    // The node now sends genesis in display/MSW-first order (same as GetHex()).
+    // solo.cpp compares the node-echoed bytes directly against hex_decode_genesis_hash()
+    // of the configured reward_address — NO word-swap.  This test pins that contract:
+    //   hex_decode(reward_address) == node_session_genesis_wire  (no swap needed)
+    // ------------------------------------------------------------------
+    std::cout << "\nTest 23: Post-PR#578 SESSION_START genesis - direct compare, no swap (LLL-TAO PR #578)" << std::endl;
+    {
+        const auto reward_bytes =
+            genesis_utils::hex_decode_genesis_hash(
+                "a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122");
+        // After LLL-TAO PR #578: node sends display_bytes directly on the wire.
+        const auto& node_session_wire = display_bytes;
+
+        test_assert(reward_bytes == node_session_wire,
+                    "Direct compare: hex_decode(reward_address) == post-PR#578 node wire bytes");
+        test_assert(reward_bytes != lsw_first_bytes,
+                    "Direct compare would FAIL against old pre-PR#578 LSW-first bytes (regression guard)");
     }
 }
 

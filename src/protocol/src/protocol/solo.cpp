@@ -3875,21 +3875,29 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             // BLOCK_REJECTED with no reason byte. Catch it here, refuse to submit, and
             // log a precise message instead.
             //
-            // NOTE on byte ordering: the node echoes genesis via base_uint::GetBytes()
-            // which serialises pn[0..7] (LSW first, each word big-endian) — "wire order".
-            // The configured reward_address was decoded from the GetHex() display string
-            // ("MSW first") obtained from 'system/get/info'. These represent the same
-            // 256-bit value with opposite word order. swap_genesis_word_order() converts
-            // wire order to display order so the two vectors become directly comparable.
+            // Wire-format note (coordinated fix with LLL-TAO PR #578):
+            //
+            //   Prior to LLL-TAO PR #578 the node emitted the genesis hash via
+            //   base_uint::GetBytes(), which serialises pn[0..7] LSW-first — opposite
+            //   to the GetHex() display order used by 'system/get/info'.  The miner was
+            //   compensating with genesis_utils::swap_genesis_word_order() to convert
+            //   the wire bytes to display order before the comparison.
+            //
+            //   LLL-TAO PR #578 fixed SessionStartPacket::BuildPayload to emit genesis
+            //   in display/MSW-first order (identical to GetHex()).  Both sides now use
+            //   the same byte order, so the comparison below is a straight equality
+            //   check with no word-swap needed.  swap_genesis_word_order() is retained
+            //   in genesis_utils.hpp for historical reference and testing but is no
+            //   longer called on this code path.
             if (!m_reward_address.empty()
                 && parsed->genesis_hash->size() == 32
                 && m_reward_address.length() == 64)
             {
                 std::vector<uint8_t> reward_bytes =
                     genesis_utils::hex_decode_genesis_hash(m_reward_address);
-                // Normalise node-echoed (wire) bytes to display order before comparing.
-                const auto node_genesis_display =
-                    genesis_utils::swap_genesis_word_order(*parsed->genesis_hash);
+                // Node sends genesis in display/MSW-first order (LLL-TAO PR #578).
+                // Direct comparison is correct; no word-swap needed.
+                const auto& node_genesis_display = *parsed->genesis_hash;
                 if (reward_bytes.size() == 32 && reward_bytes != node_genesis_display) {
                     auto bytes_to_hex = [](const std::vector<uint8_t>& b) {
                         std::string s; s.reserve(b.size() * 2);
@@ -3900,7 +3908,6 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         }
                         return s;
                     };
-                    // Log node genesis in display order so it matches 'system/get/info'.
                     const std::string node_hex = bytes_to_hex(node_genesis_display);
                     m_reward_genesis_mismatch = true;
                     m_logger->error("[Solo Session] reward_address GENESIS MISMATCH:");
