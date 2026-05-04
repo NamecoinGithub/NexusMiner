@@ -128,6 +128,9 @@ namespace nexusminer
 			if (opcode >= LEGACY_AUTH_OPCODE_MIN && opcode <= LLP::HASH_BLOCK_AVAILABLE) return false;
 			// SESSION_STATUS (219) and SESSION_STATUS_ACK (220): data-bearing (mirror-mapped opcodes)
 			if (opcode == 219 || opcode == 220) return false;
+			// NODE_SHUTDOWN carries an optional 1-byte reason payload; do not
+			// classify it as a generic header-only control opcode.
+			if (opcode == LLP::NODE_SHUTDOWN) return false;
 			// PING and CLOSE: header-only
 			if (opcode >= LLP::PING) return true;
 			// Everything else in 221-252 range: header-only (generic request/response)

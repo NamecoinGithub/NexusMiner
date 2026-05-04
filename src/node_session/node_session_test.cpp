@@ -175,6 +175,14 @@ network::Shared_payload build_auth_result_packet(ProtocolLane lane, uint8_t stat
     return protocol::PacketBuilder::build(lane, nexusminer::LLP::MINER_AUTH_RESULT, payload);
 }
 
+network::Shared_payload build_node_shutdown_packet(ProtocolLane lane, uint8_t reason)
+{
+    return protocol::PacketBuilder::build(
+        lane,
+        nexusminer::LLP::NODE_SHUTDOWN,
+        network::Payload{reason});
+}
+
 std::shared_ptr<NodeSession> make_node_session(const std::shared_ptr<asio::io_context>& io_context,
                                                config::Config& config,
                                                const std::shared_ptr<MockSocket>& socket,
@@ -636,6 +644,48 @@ void test_node_shutdown_handler_fires_from_packet()
     std::cout << "  ✓ NODE_SHUTDOWN is forwarded from the authoritative packet event" << std::endl;
 }
 
+void test_node_shutdown_handler_fires_from_receive_path()
+{
+    std::cout << "Test: NODE_SHUTDOWN packet fires from socket receive path..." << std::endl;
+
+    auto io_context = std::make_shared<asio::io_context>();
+    config::Config config(make_logger("test_logger_node_shutdown_receive"));
+    config.set_mining_mode(config::Mining_mode::HASH);
+    config.set_enable_sim_link(false);
+
+    auto socket = std::make_shared<MockSocket>(io_context);
+    auto node_session = make_node_session(io_context, config, socket, "TEST_NODE_SHUTDOWN_RX");
+    configure_valid_auth(*node_session);
+
+    int shutdown_count = 0;
+    uint8_t shutdown_reason = 0;
+    node_session->set_node_shutdown_handler([&shutdown_count, &shutdown_reason](uint8_t reason) {
+        ++shutdown_count;
+        shutdown_reason = reason;
+    });
+
+    bool connect_callback_invoked = false;
+    bool connect_started = node_session->connect(make_endpoint(ProtocolPorts::STATELESS_PORT),
+                                                 [&connect_callback_invoked](bool) {
+                                                     connect_callback_invoked = true;
+                                                 });
+
+    assert(connect_started);
+    pump_io(io_context);
+    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x87654321u));
+
+    assert(connect_callback_invoked);
+
+    socket->emit_receive(0, build_node_shutdown_packet(
+        ProtocolLane::STATELESS,
+        static_cast<uint8_t>(nexusminer::LLP::StatelessMining::ShutdownReason::GRACEFUL)));
+
+    assert(shutdown_count == 1);
+    assert(shutdown_reason == static_cast<uint8_t>(nexusminer::LLP::StatelessMining::ShutdownReason::GRACEFUL));
+
+    std::cout << "  ✓ NODE_SHUTDOWN is parsed from wire bytes and forwarded" << std::endl;
+}
+
 void test_connect_failure_updates_dcm_for_configured_lane()
 {
     std::cout << "Test: connection failure updates DCM on the configured lane..." << std::endl;
@@ -962,6 +1012,9 @@ int main()
         std::cout << std::endl;
 
         test_node_shutdown_handler_fires_from_packet();
+        std::cout << std::endl;
+
+        test_node_shutdown_handler_fires_from_receive_path();
         std::cout << std::endl;
 
         test_connect_failure_updates_dcm_for_configured_lane();
