@@ -244,6 +244,8 @@ private:
     // ── Session authentication retry state (infinite loop prevention) ─────────
     uint32_t m_session_auth_fail_count{0};          // consecutive session_id=0 failures on primary
     std::atomic<bool> m_terminal_stop_requested{false};
+    std::atomic<bool> m_node_shutdown_quarantine{false};
+    std::atomic<uint64_t> m_node_shutdown_generation{0};
 
     // Exponential backoff calculator for session authentication retries
     util::ExponentialBackoff m_session_auth_backoff{

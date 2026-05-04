@@ -16,6 +16,7 @@
 #include "LLP/include/colin_ping_protocol.h"
 #include "LLP/miner_opcodes.hpp"
 #include "LLP/llp_logging.hpp"
+#include "packet.hpp"
 #include "protocol/solo.hpp"
 #include <iostream>
 #include <cassert>
@@ -188,6 +189,57 @@ void test_shutdown_reason_enum() {
             == NodeShutdownFrame::REASON_MAINTENANCE);
 }
 
+void test_legacy_wire_parse_with_reason() {
+    std::cout << "\nTest 10: Legacy NODE_SHUTDOWN wire frame parses with reason\n";
+
+    auto payload = std::make_shared<nexusminer::network::Payload>(
+        nexusminer::network::Payload{
+            static_cast<uint8_t>(nexusminer::LLP::NODE_SHUTDOWN),
+            0x00, 0x00, 0x00, 0x01,
+            NodeShutdownFrame::REASON_GRACEFUL
+        });
+
+    std::size_t consumed = 0;
+    nexusminer::ParseResult result = nexusminer::ParseResult::MALFORMED;
+    auto packet = nexusminer::extract_packet_from_buffer_with_result(
+        payload, consumed, 0, nexusminer::ProtocolLane::LEGACY, result);
+
+    print_test_result("Legacy parse succeeds", result == nexusminer::ParseResult::SUCCESS);
+    print_test_result("Legacy consumes full frame", consumed == payload->size());
+    print_test_result("Legacy header is NODE_SHUTDOWN", packet.m_header == nexusminer::LLP::NODE_SHUTDOWN);
+    print_test_result("Legacy frame is 8-bit", !packet.m_is_uint16_opcode);
+    print_test_result("Legacy reason payload length is 1", packet.m_length == 1);
+    print_test_result("Legacy reason payload is GRACEFUL",
+        packet.m_data && packet.m_data->size() == 1 &&
+        (*packet.m_data)[0] == NodeShutdownFrame::REASON_GRACEFUL);
+}
+
+void test_stateless_wire_parse_with_reason() {
+    std::cout << "\nTest 11: Stateless NODE_SHUTDOWN wire frame parses with reason\n";
+
+    auto payload = std::make_shared<nexusminer::network::Payload>(
+        nexusminer::network::Payload{
+            0xD0, 0xFF,
+            0x00, 0x00, 0x00, 0x01,
+            NodeShutdownFrame::REASON_MAINTENANCE
+        });
+
+    std::size_t consumed = 0;
+    nexusminer::ParseResult result = nexusminer::ParseResult::MALFORMED;
+    auto packet = nexusminer::extract_packet_from_buffer_with_result(
+        payload, consumed, 0, nexusminer::ProtocolLane::STATELESS, result);
+
+    print_test_result("Stateless parse succeeds", result == nexusminer::ParseResult::SUCCESS);
+    print_test_result("Stateless consumes full frame", consumed == payload->size());
+    print_test_result("Stateless header is 0xD0FF",
+        packet.m_header == nexusminer::LLP::StatelessMining::NODE_SHUTDOWN);
+    print_test_result("Stateless frame is 16-bit", packet.m_is_uint16_opcode);
+    print_test_result("Stateless reason payload length is 1", packet.m_length == 1);
+    print_test_result("Stateless reason payload is MAINTENANCE",
+        packet.m_data && packet.m_data->size() == 1 &&
+        (*packet.m_data)[0] == NodeShutdownFrame::REASON_MAINTENANCE);
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════════\n";
     std::cout << "  NODE_SHUTDOWN (0xD0FF) Wire Protocol Tests\n";
@@ -202,6 +254,8 @@ int main() {
     test_stateless_range();
     test_logging_names();
     test_shutdown_reason_enum();
+    test_legacy_wire_parse_with_reason();
+    test_stateless_wire_parse_with_reason();
 
     std::cout << "\n═══════════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << "/" << tests_run

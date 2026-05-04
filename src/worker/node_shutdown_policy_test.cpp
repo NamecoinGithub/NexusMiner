@@ -32,6 +32,19 @@ void test_failover_switches_to_standby()
           "NODE_SHUTDOWN with failover selects standby-node switch");
 }
 
+void test_shutdown_invalidates_current_work()
+{
+    constexpr auto invalidation = nexusminer::node_shutdown_work_invalidation();
+    check(invalidation.stop_workers,
+          "NODE_SHUTDOWN invalidation stops workers");
+    check(invalidation.discard_template,
+          "NODE_SHUTDOWN invalidation discards the current template");
+    check(invalidation.reset_session,
+          "NODE_SHUTDOWN invalidation resets the current node session");
+    check(invalidation.quarantine_current_generation,
+          "NODE_SHUTDOWN invalidation quarantines current-generation templates");
+}
+
 } // namespace
 
 int main()
@@ -40,6 +53,7 @@ int main()
 
     test_no_failover_full_stops();
     test_failover_switches_to_standby();
+    test_shutdown_invalidates_current_work();
 
     if (tests_failed != 0) {
         std::cout << "\nnode_shutdown_policy_test: " << tests_failed

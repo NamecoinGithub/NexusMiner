@@ -185,6 +185,22 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* This lambda is called by the template feed handler (PR #62) when templates arrive */
         m_primary_node_session->set_template_handler(
             [this](const ::LLP::CBlock& block, uint32_t nBits) {
+                if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+                    m_logger->warn("[Worker_manager] Ignoring template after terminal stop request");
+                    return;
+                }
+
+                if (m_node_shutdown_quarantine.load(std::memory_order_acquire)) {
+                    const auto current_generation = m_session_generation.load(std::memory_order_acquire);
+                    const auto shutdown_generation = m_node_shutdown_generation.load(std::memory_order_acquire);
+                    if (current_generation <= shutdown_generation) {
+                        m_logger->warn("[Worker_manager] Ignoring template from NODE_SHUTDOWN generation "
+                                       "(current={}, shutdown={})",
+                                       current_generation, shutdown_generation);
+                        return;
+                    }
+                }
+
                 std::size_t worker_count = 0;
                 {
                     std::lock_guard<std::mutex> lock(m_worker_mutex);
@@ -551,6 +567,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         m_logger->warn("[Worker_manager]    Fresh template distributed to workers successfully");
                         m_logger->warn("[Worker_manager]    Workers resumed mining on valid template");
                         m_logger->warn("[Worker_manager] ═══════════════════════════════════════════════════════════");
+                    }
+                    if (m_node_shutdown_quarantine.exchange(false, std::memory_order_acq_rel)) {
+                        m_logger->warn("[Worker_manager] NODE_SHUTDOWN quarantine cleared after fresh template distribution");
                     }
                     clear_recovery_state();
 
@@ -1254,6 +1273,34 @@ void Worker_manager::handle_node_shutdown(uint8_t reason)
 {
     m_logger->warn("[Worker_manager] NODE_SHUTDOWN received (reason=0x{:02X})", reason);
 
+    const auto invalidation = nexusminer::node_shutdown_work_invalidation();
+    const auto shutdown_generation =
+        m_session_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (invalidation.quarantine_current_generation) {
+        m_node_shutdown_generation.store(shutdown_generation, std::memory_order_release);
+        m_node_shutdown_quarantine.store(true, std::memory_order_release);
+    }
+
+    auto active_protocol = m_primary_node_session
+        ? m_primary_node_session->get_active_protocol()
+        : nullptr;
+    if (!active_protocol && m_primary_node_session) {
+        active_protocol = m_primary_node_session->get_primary_protocol();
+    }
+    if (invalidation.discard_template && active_protocol) {
+        if (auto* template_interface = active_protocol->get_template_interface()) {
+            template_interface->discard_template("node_shutdown");
+        }
+    }
+
+    if (invalidation.stop_workers) {
+        stop_all_workers();
+    }
+
+    if (invalidation.reset_session && m_primary_node_session) {
+        m_primary_node_session->reset();
+    }
+
     const auto action = nexusminer::decide_node_shutdown_action(m_config.has_failover());
     if (action == NodeShutdownAction::FULL_STOP)
     {
@@ -1291,13 +1338,7 @@ void Worker_manager::handle_node_shutdown(uint8_t reason)
                        standby_endpoint.to_string());
     }
 
-    stop_all_workers();
-    ++m_session_generation;
     transition_to(RecoveryPhase::RECONNECTING, "node_shutdown_standby_switch");
-
-    if (m_primary_node_session) {
-        m_primary_node_session->reset();
-    }
 
     m_using_failover = target_is_failover;
     m_primary_fail_count = 0;
