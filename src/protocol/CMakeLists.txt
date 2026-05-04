@@ -76,6 +76,13 @@ add_nexusminer_test(NAME packet_builder_test
     LINK_LIBS   protocol LLP spdlog
     INCLUDE_DIRS ${_LLP_INC})
 
+# Pins miner-side LEGACY (port 8323) wire output against docs/PROTOCOL_LANES.md.
+# See docs/diagnostics/legacy-lane-node-bug.md for context.
+add_nexusminer_test(NAME legacy_lane_wire_contract_test
+    SOURCES     legacy_lane_wire_contract_test.cpp
+    LINK_LIBS   protocol LLP spdlog
+    INCLUDE_DIRS ${_LLP_INC})
+
 add_nexusminer_test(NAME keepalive_v2_test
     SOURCES     keepalive_v2_test.cpp
     LINK_LIBS   protocol LLP spdlog
