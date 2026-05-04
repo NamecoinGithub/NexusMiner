@@ -1152,7 +1152,61 @@ void test_stateless_get_block_zero_length() {
 }
 
 // ============================================================================
-// Test Case 23c: Stateless BLOCK_DATA (0xD000) with 216-byte payload
+// Test Case 23c: Legacy GET_BLOCK (0x81) accepts request and template response forms
+// ============================================================================
+void test_legacy_get_block_template_forms() {
+    std::cout << "\nTest 23c: Legacy GET_BLOCK (0x81) request/template forms" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    acc.feed({0x81, 0x00, 0x00, 0x00, 0x00});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0x81) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Legacy GET_BLOCK zero-length request frame parsed", test1);
+
+    std::vector<uint8_t> template_response = {0x81, 0x00, 0x00, 0x00, 0xE4};
+    for (int i = 0; i < 228; ++i) {
+        template_response.push_back(static_cast<uint8_t>(i & 0xFF));
+    }
+    acc.feed(template_response);
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0x81) &&
+                 (packet.m_length == 228) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 228) &&
+                 ((*packet.m_data)[0] == 0x00) &&
+                 ((*packet.m_data)[3] == 0x03) &&
+                 acc.empty();
+    print_test_result("Legacy GET_BLOCK 228-byte template response parsed", test2);
+
+    std::vector<uint8_t> partial_template = {0x81, 0x00, 0x00, 0x00, 0xE4};
+    partial_template.resize(partial_template.size() + 100, 0xAA);
+    acc.feed(partial_template);
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = !parsed3 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == partial_template.size());
+    print_test_result("Legacy GET_BLOCK partial template waits for more data", test3);
+    acc.clear();
+
+    acc.feed({0x81, 0x00, 0x00, 0x00, 0x01, 0xAA});
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = !parsed4 &&
+                 (result == ParseResult::MALFORMED) &&
+                 acc.empty();
+    print_test_result("Legacy GET_BLOCK invalid nonzero length is malformed", test4);
+}
+
+// ============================================================================
+// Test Case 23d: Stateless BLOCK_DATA (0xD000) with 216-byte payload
 // Node responds to GET_BLOCK with BLOCK_DATA containing 216-byte block template
 // ============================================================================
 void test_stateless_block_data_with_payload() {
@@ -1531,6 +1585,7 @@ int main() {
     test_accept_reject_still_header_only();
     test_stateless_get_block_with_payload();
     test_stateless_get_block_zero_length();
+    test_legacy_get_block_template_forms();
     test_stateless_block_data_with_payload();
     test_stateless_auth_opcodes_with_payload();
     test_legacy_auth_opcode_208_not_rejected();

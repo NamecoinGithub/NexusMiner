@@ -522,7 +522,7 @@ private:
     void on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_session_status_ack(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_get_round_response(Packet const& packet, std::shared_ptr<network::Connection> connection);
-    void on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    void on_get_block_template(Packet const& packet, std::shared_ptr<network::Connection> connection);
     bool activate_push_lane_after_channel_ack(std::shared_ptr<network::Connection> connection);
 
     std::uint8_t m_channel;
@@ -733,6 +733,7 @@ private:
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
     // re-reading from a potentially-replaced template (Priority 2 fix).
     bool      m_last_submitted_valid{false};
+    bool      m_submit_result_pending{false};
     uint64_t  m_last_submitted_nonce{0};
     uint1024_t m_last_submitted_prev_hash{0};
     uint32_t  m_last_submitted_height{0};
@@ -881,7 +882,7 @@ private:
 
         /// Returns true if a request was marked active but has expired (timed out
         /// without a BLOCK_DATA response clearing it).  Does NOT clear the flag —
-        /// that happens in on_block_data() / on_stateless_get_block() or via is_pending_for().
+        /// that happens in on_block_data() / on_get_block_template() or via is_pending_for().
         bool has_timed_out() const {
             if (!active) return false;
             return elapsed_ms() >= TIMEOUT_SECONDS * 1000;

@@ -806,9 +806,9 @@ void test_reset_ignores_late_connect_events_from_old_transport_generation()
     std::cout << "  ✓ Late pre-reset connect events are ignored and the next reconnect stays clean" << std::endl;
 }
 
-void test_malformed_packet_does_not_fail_active_lane()
+void test_malformed_packet_closes_connection_without_lane_fail()
 {
-    std::cout << "Test: malformed packet stays diagnostic-only and does not fail the active lane..." << std::endl;
+    std::cout << "Test: malformed framed packet closes connection without marking active lane failed..." << std::endl;
 
     auto io_context = std::make_shared<asio::io_context>();
     config::Config config(make_logger("test_logger_malformed_lane"));
@@ -849,15 +849,9 @@ void test_malformed_packet_does_not_fail_active_lane()
 
     assert(node_session->is_primary_connected());
     assert(dcm.is_stateless_alive());
+    assert(socket->connection(0)->closed());
 
-    socket->emit_receive(0, build_auth_result_packet(ProtocolLane::STATELESS, 0x01, 0x55667788u));
-
-    assert(session_authenticated_count == 2);
-    assert(last_sid == protocol::SessionId(0x55667788u));
-    assert(node_session->session_id() == protocol::SessionId(0x55667788u));
-    assert(dcm.is_stateless_alive());
-
-    std::cout << "  ✓ Malformed bytes do not mark the lane failed and parsing recovers" << std::endl;
+    std::cout << "  ✓ Malformed framed bytes close transport instead of byte-drop resync" << std::endl;
 }
 
 void test_transmit_returns_false_when_connection_rejects_payload()
@@ -979,7 +973,7 @@ int main()
         test_reset_ignores_late_connect_events_from_old_transport_generation();
         std::cout << std::endl;
 
-        test_malformed_packet_does_not_fail_active_lane();
+        test_malformed_packet_closes_connection_without_lane_fail();
         std::cout << std::endl;
 
         test_transmit_returns_false_when_connection_rejects_payload();

@@ -37,6 +37,7 @@ Copy the config that matches your hardware and channel, fill in your `genesis` h
 
 | Port | Lane | Use |
 |------|------|-----|
-| 8323 | Stateless (16-bit opcodes) | Default Prime channel port |
-| 8325 | Stateless (16-bit opcodes) | Default Hash channel port / future TLS legacy port (node PORT_SSL — currently 0) |
-| 9325 | Stateless TLS (reserved)   | Future TLS stateless port (node PORT_SSL — currently 0) |
+| 8323 | Legacy (8-bit opcodes) | Legacy mining lane |
+| 9323 | Stateless (16-bit opcodes) | Default stateless mining lane |
+| 8325 | Legacy TLS (reserved) | Future TLS legacy port (node PORT_SSL — currently 0) |
+| 9325 | Stateless TLS (reserved) | Future TLS stateless port (node PORT_SSL — currently 0) |

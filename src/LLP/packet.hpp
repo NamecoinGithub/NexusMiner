@@ -68,6 +68,9 @@ namespace nexusminer
 		
 		// Safety cap for outbound packets to detect corruption (100KB is far above normal payload sizes)
 		static constexpr uint32_t MAX_PACKET_LENGTH = 100000;
+
+		// Current mining template payload: 12-byte metadata prefix + 216-byte Tritium block.
+		static constexpr uint32_t GET_BLOCK_TEMPLATE_PAYLOAD_LENGTH = 228;
 		
 		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
 		// Opcodes 206-255 are always legacy single-byte format, never stateless
@@ -129,6 +132,10 @@ namespace nexusminer
 			if (opcode >= LLP::PING) return true;
 			// Everything else in 221-252 range: header-only (generic request/response)
 			return true;
+		}
+
+		inline bool is_legacy_get_block_template_length(uint32_t length) {
+			return length == GET_BLOCK_TEMPLATE_PAYLOAD_LENGTH;
 		}
 		
 		// Helper to determine if a stateless (mirror-mapped) opcode is zero-payload.
@@ -945,7 +952,36 @@ namespace nexusminer
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
-			// Header-only opcodes: complete with just 1 byte
+			if (header_byte == LLP::GET_BLOCK)
+			{
+				if (buffer_size < MIN_PACKET_SIZE)
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
+				if (length != 0 && !PacketConstants::is_legacy_get_block_template_length(length))
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				if (length > std::distance(buffer_start + MIN_PACKET_SIZE, buffer->end()))
+				{
+					packet.m_is_valid = false;
+					return packet;
+				}
+				packet.m_is_valid = true;
+				packet.m_length = length;
+				if (length > 0)
+				{
+					packet.m_data = std::make_shared<network::Payload>(
+						buffer_start + MIN_PACKET_SIZE, buffer_start + MIN_PACKET_SIZE + length);
+				}
+				remaining_size = buffer_size - (MIN_PACKET_SIZE + length);
+				return packet;
+			}
+
+			// Header-only opcodes: complete with explicit zero-length frame
 			if (PacketConstants::is_legacy_header_only_opcode(header_byte))
 			{
 				if (buffer_size < MIN_PACKET_SIZE)
@@ -1136,6 +1172,48 @@ namespace nexusminer
 			uint8_t header_byte = (*buffer)[start_index];
 			packet.m_header = header_byte;
 			
+			// GET_BLOCK is bidirectional on the legacy lane: miners send it as a
+			// zero-length request and compatible nodes may answer with the 228-byte
+			// template payload on the same opcode.
+			if (header_byte == LLP::GET_BLOCK)
+			{
+				if (buffer_size < MIN_PACKET_SIZE)
+				{
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
+				}
+
+				std::uint32_t const length = read_be32(buffer->data() + start_index + 1);
+				if (length > PacketConstants::MAX_REASONABLE_LENGTH)
+				{
+					result = ParseResult::MALFORMED;
+					return packet;
+				}
+				if (length != 0 && !PacketConstants::is_legacy_get_block_template_length(length))
+				{
+					result = ParseResult::MALFORMED;
+					return packet;
+				}
+
+				std::size_t const total_packet_size = MIN_PACKET_SIZE + length;
+				if (buffer_size < total_packet_size)
+				{
+					result = ParseResult::NEED_MORE_DATA;
+					return packet;
+				}
+
+				packet.m_is_valid = true;
+				packet.m_length = length;
+				if (length > 0)
+				{
+					packet.m_data = std::make_shared<network::Payload>(
+						buffer_start + MIN_PACKET_SIZE, buffer_start + total_packet_size);
+				}
+				bytes_consumed = total_packet_size;
+				result = ParseResult::SUCCESS;
+				return packet;
+			}
+
 			// Check if this opcode is header-only (no length field follows on the wire)
 			// Data packets (< 128) and most auth packets (206-218) have length + payload
 			// Request/response packets and MINER_READY/PING are header-only
