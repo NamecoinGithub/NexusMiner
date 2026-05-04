@@ -17,6 +17,10 @@ struct Global
     std::uint32_t m_accepted_shares{ 0 };
     std::uint32_t m_rejected_shares{ 0 };
     std::uint32_t m_connection_retries{ 0 };
+    // Number of times the upstream Nexus core node legacy-lane dispatcher bug
+    // pattern was detected on a LEGACY (port-8323) connection.
+    // See docs/diagnostics/legacy-lane-node-bug.md.
+    std::uint32_t m_legacy_lane_node_bug_detected{ 0 };
     bool m_degraded_mode{ false };  // Mining stopped due to invalid template
 
     Global& operator+=(Global const& other)
@@ -26,6 +30,7 @@ struct Global
         m_accepted_shares += other.m_accepted_shares;
         m_rejected_shares += other.m_rejected_shares;
         m_connection_retries += other.m_connection_retries;
+        m_legacy_lane_node_bug_detected += other.m_legacy_lane_node_bug_detected;
         // Don't accumulate degraded_mode, use the latest state
         m_degraded_mode = other.m_degraded_mode;
 

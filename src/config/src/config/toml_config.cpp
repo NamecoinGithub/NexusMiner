@@ -250,6 +250,13 @@ namespace config
                     {
                         config.set_enable_sim_link(parse_bool_value(value));
                     }
+                    else if (key == "legacy_lane_node_bug_workaround")
+                    {
+                        // Workaround for the upstream Nexus core node legacy-lane
+                        // dispatcher bug; see docs/diagnostics/legacy-lane-node-bug.md.
+                        // Default false (fail-loud).
+                        config.set_legacy_lane_node_bug_workaround(parse_bool_value(value));
+                    }
                     else if (key == "get_block_interval_ms")
                     {
                         constexpr int MIN_GET_BLOCK_MS = 100;

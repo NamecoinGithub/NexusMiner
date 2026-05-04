@@ -264,6 +264,14 @@ public:
     void set_keepalive_interval(uint16_t hours);
 
     /**
+     * @brief Enable/disable the workaround for the upstream Nexus core node
+     * legacy-lane dispatcher bug.  See docs/diagnostics/legacy-lane-node-bug.md.
+     * Default: false (fail-loud).  Forwarded to both primary and secondary
+     * Solo protocol instances.
+     */
+    void set_legacy_lane_node_bug_workaround(bool enable);
+
+    /**
      * @brief Get the primary protocol instance (for direct access if needed)
      * @return Shared pointer to primary Solo protocol
      */
@@ -462,6 +470,7 @@ private:
     std::string m_reward_address;
     std::vector<uint8_t> m_tritium_genesis;
     uint16_t m_keepalive_interval_hours{24};
+    bool m_legacy_lane_node_bug_workaround{false};
     Connection_callback m_pending_connect_callback;
     ProtocolLane m_primary_requested_lane{ProtocolLane::UNKNOWN};
     ProtocolLane m_secondary_requested_lane{ProtocolLane::UNKNOWN};

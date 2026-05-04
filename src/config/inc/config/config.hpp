@@ -85,6 +85,10 @@ public:
 	
 	// SIM Link / failover flags retained for lane-health + second-node failover wiring.
 	bool get_enable_sim_link() const { return m_enable_sim_link; }
+
+	// Workaround for the upstream Nexus core node legacy-lane dispatcher bug
+	// (see docs/diagnostics/legacy-lane-node-bug.md).  Default: false (fail-loud).
+	bool get_legacy_lane_node_bug_workaround() const { return m_legacy_lane_node_bug_workaround; }
 	/// Returns the opposite-lane companion port for legacy compatibility helpers only.
 	std::uint16_t get_secondary_port() const
 	{
@@ -135,6 +139,7 @@ public:
 	// Dedicated TLS mining port (0 = disabled/use plaintext port)
 	void set_ssl_port(std::uint16_t port) { m_ssl_port = port; }
 	void set_enable_sim_link(bool enable) { m_enable_sim_link = enable; }
+	void set_legacy_lane_node_bug_workaround(bool enable) { m_legacy_lane_node_bug_workaround = enable; }
 	void set_get_block_interval_ms(uint32_t ms) { m_get_block_interval_ms = ms; }
 	void set_colin_enabled(bool enabled) { m_colin_enabled = enabled; }
 	void set_colin_report_interval_seconds(uint32_t secs) { m_colin_report_interval_seconds = secs; }
@@ -205,6 +210,10 @@ private:
 	
 	// SIM Link: dual-lane (stateless + legacy) simultaneous connection (default: enabled)
 	bool m_enable_sim_link;
+
+	// Workaround for upstream Nexus core node legacy-lane dispatcher bug.
+	// See docs/diagnostics/legacy-lane-node-bug.md.  Default: false.
+	bool m_legacy_lane_node_bug_workaround{false};
 
 	// GET_BLOCK miner-side rate limit in milliseconds (default: 2500)
 	uint32_t m_get_block_interval_ms;

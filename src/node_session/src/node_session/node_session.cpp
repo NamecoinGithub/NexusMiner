@@ -180,6 +180,7 @@ void NodeSession::sync_protocol_state(LaneSlot slot)
     protocol->set_keepalive_interval(m_keepalive_interval_hours);
     protocol->enable_chacha20_wrapping(true);
     protocol->enable_disposable_falcon(true);
+    protocol->enable_legacy_lane_node_bug_workaround(m_legacy_lane_node_bug_workaround);
     apply_protocol_handlers(slot);
 }
 
@@ -855,6 +856,18 @@ void NodeSession::set_keepalive_interval(uint16_t hours)
     }
     if (m_secondary_protocol) {
         m_secondary_protocol->set_keepalive_interval(hours);
+    }
+}
+
+void NodeSession::set_legacy_lane_node_bug_workaround(bool enable)
+{
+    m_legacy_lane_node_bug_workaround = enable;
+
+    if (m_primary_protocol) {
+        m_primary_protocol->enable_legacy_lane_node_bug_workaround(enable);
+    }
+    if (m_secondary_protocol) {
+        m_secondary_protocol->enable_legacy_lane_node_bug_workaround(enable);
     }
 }
 

@@ -83,6 +83,12 @@ add_nexusminer_test(NAME legacy_lane_wire_contract_test
     LINK_LIBS   protocol LLP spdlog
     INCLUDE_DIRS ${_LLP_INC})
 
+# Detector for the upstream node bug analysed in
+# docs/diagnostics/legacy-lane-node-bug.md.  Header-only helper; pure C++.
+add_nexusminer_test(NAME legacy_lane_node_bug_detector_test
+    SOURCES     legacy_lane_node_bug_detector_test.cpp
+    LINK_LIBS   protocol)
+
 add_nexusminer_test(NAME keepalive_v2_test
     SOURCES     keepalive_v2_test.cpp
     LINK_LIBS   protocol LLP spdlog

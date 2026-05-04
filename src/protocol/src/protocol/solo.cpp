@@ -2485,6 +2485,47 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
                            "(pending_get_block={}) — not counting as a mined block rejection",
                            had_pending_get_block ? "true" : "false");
             m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
+
+            // ── Upstream Nexus core node legacy-lane dispatcher bug detector ──
+            // A "phantom" REJECT (with no submit pending) on a LEGACY connection
+            // is the exact signature of the bug analysed in
+            // docs/diagnostics/legacy-lane-node-bug.md.  Two such rejections
+            // within the detector window trip the one-shot signal.
+            if (m_protocol_lane == ProtocolLane::LEGACY) {
+                const bool tripped = m_legacy_lane_node_bug_detector
+                    .observe_phantom_rejection(LegacyLaneNodeBugDetector::Clock::now());
+                if (tripped) {
+                    if (m_stats_collector) {
+                        stats::Global global_stats{};
+                        global_stats.m_legacy_lane_node_bug_detected = 1;
+                        m_stats_collector->update_global_stats(global_stats);
+                    }
+                    if (m_legacy_lane_node_bug_workaround) {
+                        m_logger->warn("[Solo] Detected upstream Nexus core node legacy-lane "
+                                       "dispatcher bug (≥{} phantom REJECTs within {}ms on LEGACY). "
+                                       "Workaround flag is ENABLED — closing connection so the "
+                                       "reconnect scheduler retries (consider configuring "
+                                       "port = 9323 stateless lane until upstream fix lands). "
+                                       "See docs/diagnostics/legacy-lane-node-bug.md.",
+                                       m_legacy_lane_node_bug_detector.threshold(),
+                                       m_legacy_lane_node_bug_detector.window().count());
+                    } else {
+                        m_logger->error("[Solo] Detected upstream Nexus core node legacy-lane "
+                                        "dispatcher bug (≥{} phantom REJECTs within {}ms on LEGACY). "
+                                        "Closing connection. See "
+                                        "docs/diagnostics/legacy-lane-node-bug.md for analysis. "
+                                        "To suppress this error and switch to a warning, set "
+                                        "[network] legacy_lane_node_bug_workaround = true.",
+                                        m_legacy_lane_node_bug_detector.threshold(),
+                                        m_legacy_lane_node_bug_detector.window().count());
+                    }
+                    if (connection) {
+                        connection->close();
+                    }
+                    return;
+                }
+            }
+
             if (m_recovery_handler) {
                 m_recovery_handler();
             }
@@ -4370,6 +4411,9 @@ bool Solo::is_session_active() const
 void Solo::set_connection(std::shared_ptr<network::Connection> connection)
 {
     m_connection = std::move(connection);
+    // Each fresh connection gets a fresh legacy-lane node-bug detector window
+    // so a tripped detector from a previous session does not silence the new one.
+    m_legacy_lane_node_bug_detector.reset();
     if (m_session_context) {
         m_session_context->set_connection(m_connection);
         update_connection_metadata(m_connection);

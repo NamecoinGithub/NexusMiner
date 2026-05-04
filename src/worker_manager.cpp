@@ -166,6 +166,16 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_primary_node_session->set_keepalive_interval(get_effective_keepalive_interval());
         m_logger->info("[Worker_manager] Keepalive interval: {} hours", get_effective_keepalive_interval());
 
+        // Forward upstream-node legacy-lane bug workaround flag
+        // (see docs/diagnostics/legacy-lane-node-bug.md).
+        m_primary_node_session->set_legacy_lane_node_bug_workaround(
+            m_config.get_legacy_lane_node_bug_workaround());
+        if (m_config.get_legacy_lane_node_bug_workaround()) {
+            m_logger->warn("[Worker_manager] legacy_lane_node_bug_workaround = true "
+                           "(operator opt-in for upstream node bug — see "
+                           "docs/diagnostics/legacy-lane-node-bug.md)");
+        }
+
         m_logger->info("[Worker_manager] ChaCha20 encryption: ENABLED (ALWAYS ON - core security)");
         m_logger->info("[Worker_manager] Disposable Falcon signing: ENABLED (ALWAYS ON - core protocol, 0 blockchain overhead)");
 

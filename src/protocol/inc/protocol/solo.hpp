@@ -18,6 +18,7 @@
 #include "protocol/hash_checkpoint_guard.hpp"
 #include "protocol/merkle_root_feed_guard.hpp"
 #include "protocol/packet_router.hpp"
+#include "protocol/legacy_lane_node_bug_detector.hpp"
 #include "mining/client_channel_manager.h"
 #include "protocol_lane.hpp"
 #include "LLP/colin_ping_handler.h"
@@ -166,6 +167,14 @@ public:
     // Disposable Falcon is ALWAYS ON (core protocol) - method kept for backward compatibility only
     void enable_disposable_falcon(bool enable) { m_disposable_falcon_enabled = enable; }
     bool is_disposable_falcon_enabled() const { return m_disposable_falcon_enabled; }
+
+    // Workaround flag for the upstream Nexus core node legacy-lane dispatcher
+    // bug (see docs/diagnostics/legacy-lane-node-bug.md).  Default: false
+    // (fail-loud).  When false, detection logs a single error and closes the
+    // connection.  When true, detection logs a warn and closes the connection;
+    // operators using true should configure port = 9323 (stateless lane).
+    void enable_legacy_lane_node_bug_workaround(bool enable) { m_legacy_lane_node_bug_workaround = enable; }
+    bool is_legacy_lane_node_bug_workaround_enabled() const { return m_legacy_lane_node_bug_workaround; }
     
     // Legacy method names (deprecated - kept for backward compatibility)
     void enable_block_signing(bool enable) { m_disposable_falcon_enabled = enable; }
@@ -814,6 +823,11 @@ private:
     
     // Helper method to determine and log lane from connection
     void initialize_protocol_lane(std::shared_ptr<network::Connection> connection);
+
+    // Detector + flag for the upstream Nexus core node legacy-lane dispatcher
+    // bug.  See docs/diagnostics/legacy-lane-node-bug.md.
+    LegacyLaneNodeBugDetector m_legacy_lane_node_bug_detector{};
+    bool m_legacy_lane_node_bug_workaround{false};
 
     // ═══════════════════════════════════════════════════════════════════════
     // COLIN AI DIAGNOSTIC PING/PONG HANDLER
