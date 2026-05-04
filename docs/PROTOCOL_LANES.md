@@ -130,7 +130,7 @@ The pre-Tritium format included `nTime` in the template:
 
 | Term | Category | Meaning |
 |------|----------|---------|
-| "Legacy Lane" | Protocol framing | Port 8323, 8-bit opcodes, polling (GET_ROUND/NEW_ROUND) |
+| "Legacy Lane" | Protocol framing | Port 8323, 8-bit opcodes, push (MINER_READY/GET_BLOCK) plus GET_ROUND fallback |
 | "Stateless Lane" | Protocol framing | Port 9323, 16-bit opcodes, push (MINER_READY/GET_BLOCK) |
 | "Legacy Block" | Block serialization | 220-byte format with `nTime` in template (historical) |
 | "Tritium Block" | Block serialization | 216-byte format, `nTime` set by node (current standard for **both** lanes) |

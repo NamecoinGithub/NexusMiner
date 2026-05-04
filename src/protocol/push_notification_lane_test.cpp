@@ -941,7 +941,40 @@ int main()
     }
 
     // ====================================================================
-    // Test 20: Soft-refresh loop terminates — BLOCK_DATA accepted when its
+    // Test 20: Legacy GET_BLOCK template response processes without active session
+    // ====================================================================
+    std::cout << "\nTest 20: Legacy GET_BLOCK template response processes without active session" << std::endl;
+    {
+        auto session_manager = std::make_shared<protocol::SessionManager>();
+        auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
+        protocol::Solo solo(static_cast<uint8_t>(mining::CHANNEL_HASH), nullptr, session_context);
+        solo.set_protocol_lane(ProtocolLane::LEGACY);
+
+        bool block_handler_called = false;
+        solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
+            block_handler_called = true;
+        });
+
+        Packet zero_request(static_cast<uint8_t>(MinerLLP::GET_BLOCK));
+        solo.process_messages(zero_request, nullptr);
+        print_test_result("Legacy zero-length GET_BLOCK does not feed a template", !block_handler_called);
+
+        network::Payload payload = create_template_delivery_payload(9450, 101, 0x1d00ffff, 9451, 2);
+        Packet packet(static_cast<uint8_t>(MinerLLP::GET_BLOCK), payload);
+        solo.process_messages(packet, nullptr);
+        auto const* installed_template = solo.get_template_interface()->get_current_template();
+
+        print_test_result("Legacy GET_BLOCK payload feeds a template", block_handler_called);
+        print_test_result("Legacy GET_BLOCK payload leaves a valid template installed",
+            solo.get_template_interface()->has_valid_template());
+        print_test_result("Legacy GET_BLOCK payload installs expected height",
+            installed_template && installed_template->block.nHeight == 9451);
+        print_test_result("Legacy GET_BLOCK payload installs expected difficulty",
+            installed_template && installed_template->nBits == 0x1d00ffff);
+    }
+
+    // ====================================================================
+    // Test 21: Soft-refresh loop terminates — BLOCK_DATA accepted when its
     //          hashPrevBlock differs from the push tip anchor
     //
     // Regression test for the infinite soft-refresh / template-swap pending

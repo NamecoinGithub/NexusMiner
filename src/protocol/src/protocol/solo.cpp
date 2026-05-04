@@ -379,11 +379,11 @@ void Solo::register_packet_handlers()
         on_push_notification(p, c, mining::CHANNEL_HASH);
     });
 
-    // Stateless GET_BLOCK response (uint16_t only — no legacy mirror)
+    // GET_BLOCK template response. Stateless uses 0xD081; legacy-compatible nodes
+    // may answer the 0x81 request with the same 228-byte template payload.
     m_packet_router.register_handler(Pkt::GET_BLOCK, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
-        // Only stateless-lane packets (the handler itself checks internally)
-        if (p.m_is_uint16_opcode) {
-            on_stateless_get_block(p, c);
+        if (p.m_is_uint16_opcode || p.m_length > 0) {
+            on_get_block_template(p, c);
         }
     });
 
@@ -2473,10 +2473,25 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
+        if (!m_last_submitted_valid) {
+            const bool had_pending_get_block = m_pending_get_block.active;
+            m_pending_get_block.clear();
+            reset_get_block_dedup_state();
+            m_logger->warn("[Solo] Protocol/template REJECT received with no submitted block pending "
+                           "(pending_get_block={}) — not counting as a mined block rejection",
+                           had_pending_get_block ? "true" : "false");
+            m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
+            if (m_recovery_handler) {
+                m_recovery_handler();
+            }
+            return;
+        }
+
         stats::Global global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
+        m_last_submitted_valid = false;
 
         // Retrieve height and channel from last template for the diagnostic log.
         uint32_t rejected_height = 0;
@@ -3976,7 +3991,7 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
     cancel_recovery_timer(push_opcode_name);
 }
 
-void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network::Connection> connection)
+void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
     // Clear in-flight GET_BLOCK state unconditionally — the node has responded.
     // Even invalid/empty responses mean the pending request has been serviced;
@@ -3984,32 +3999,31 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
     // legitimate future GET_BLOCK requests from PUSH/GET_ROUND/Health paths.
     m_pending_get_block.clear();
 
-    // ═══════════════════════════════════════════════════════════════════
-    // STATELESS PROTOCOL AUTO-NEGOTIATION: Success!
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // Unified handler for initial template response
-    handle_initial_template_response("STATELESS_GET_BLOCK (0xD081)");
+    const bool stateless = packet.m_is_uint16_opcode;
+    const char* source_name = stateless ? "STATELESS_GET_BLOCK (0xD081)" : "LEGACY_GET_BLOCK (0x81)";
+    const char* protocol_mode = stateless ? "Stateless Push" : "Legacy Push";
 
-    // (m_pending_get_block.clear() is now at the top of on_stateless_get_block)
+    // Unified handler for initial template response
+    handle_initial_template_response(source_name);
+
+    // (m_pending_get_block.clear() is now at the top of on_get_block_template)
     
     // ═══════════════════════════════════════════════════════════════════
     // ENHANCED DIAGNOSTICS: Template delivery tracking
     // ═══════════════════════════════════════════════════════════════════
     m_logger->debug("[Solo Template Delivery] ═══════════════════════════════════");
-    m_logger->debug("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: STATELESS_GET_BLOCK (0xD081)");
-        m_logger->debug("[Solo Template Delivery]   Mirror-mapped from legacy GET_BLOCK (129)");
-        m_logger->debug("[Solo Template Delivery]   Delivery Method: Stateless 16-bit opcode");
+    m_logger->debug("[Solo Template Delivery] 📥 TEMPLATE RECEIVED VIA: {}", source_name);
+        m_logger->debug("[Solo Template Delivery]   Delivery Method: {} opcode",
+                        stateless ? "Stateless 16-bit" : "Legacy 8-bit");
         m_logger->debug("[Solo Template Delivery]   Payload Size: {} bytes", packet.m_length);
         m_logger->debug("[Solo Template Delivery]   Expected Format: 12 metadata + 216 block");
-        m_logger->debug("[Solo Template Delivery]   Protocol Mode: Stateless Push");
+        m_logger->debug("[Solo Template Delivery]   Protocol Mode: {}", protocol_mode);
         m_logger->debug("[Solo Template Delivery] ═══════════════════════════════════");
         
-        m_logger->debug("[Solo Stateless] ✨ STATELESS_GET_BLOCK (0xD081) received! {} bytes",
-                       packet.m_length);
+        m_logger->debug("[Solo GET_BLOCK] ✨ {} received! {} bytes", source_name, packet.m_length);
 
         if (!m_template_interface) {
-            m_logger->error("[Solo Stateless] No template interface available!");
+            m_logger->error("[Solo GET_BLOCK] No template interface available!");
             return;
         }
 
@@ -4020,21 +4034,21 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
         // MiningTemplateInterface::read_stateless_payload().  All canonical mining
         // state (nHeight, nChannel, nBits, hashPrevBlock) comes from the block body.
         if (!packet.m_data) {
-            m_logger->error("[Solo Stateless] Null packet data — empty STATELESS_GET_BLOCK response");
-            m_logger->error("[Solo Stateless] Recovery: Exiting recovery and retrying GET_BLOCK");
+            m_logger->error("[Solo GET_BLOCK] Null packet data — empty {} response", source_name);
+            m_logger->error("[Solo GET_BLOCK] Recovery: Exiting recovery and retrying GET_BLOCK");
 
             // Notify Worker_manager to re-initiate recovery (same pattern as BLOCK_DATA)
             if (m_recovery_handler) {
-                m_logger->info("[Solo Stateless] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
             }
 
             // Immediate retry after notifying recovery handler
             if (connection) {
                 if (!request_and_queue_get_block(connection,
-                                                 GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo Stateless] Recovery GET_BLOCK")) {
-                    m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
+                                                  GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo GET_BLOCK] Recovery GET_BLOCK")) {
+                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
                 }
             }
             return;
@@ -4043,21 +4057,21 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
             *m_template_interface, *packet.m_data, m_channel, m_logger, false);
 
         if (!decoded.valid) {
-            m_logger->error("[Solo Stateless] Template decode failed: {}", decoded.error_message);
-            m_logger->error("[Solo Stateless] Recovery: Invalid template — exiting recovery and retrying");
+            m_logger->error("[Solo GET_BLOCK] Template decode failed: {}", decoded.error_message);
+            m_logger->error("[Solo GET_BLOCK] Recovery: Invalid template — exiting recovery and retrying");
 
             // Notify Worker_manager to re-initiate recovery
             if (m_recovery_handler) {
-                m_logger->info("[Solo Stateless] Invoking recovery handler to retry GET_BLOCK after backoff");
+                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
             }
 
             // Immediate retry after notifying recovery handler
             if (connection) {
                 if (!request_and_queue_get_block(connection,
-                                                 GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo Stateless] Decode recovery GET_BLOCK")) {
-                    m_logger->error("[Solo Stateless] Recovery failed - GET_BLOCK returned empty payload");
+                                                  GetBlockReason::VALIDATION_FAILURE,
+                                                 "[Solo GET_BLOCK] Decode recovery GET_BLOCK")) {
+                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
                 }
             }
             return;
@@ -4067,15 +4081,15 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
         uint32_t channel_height = decoded.channel_height;
         uint32_t difficulty     = decoded.difficulty_nbits;
 
-        m_logger->info("[Solo Stateless] 📦 Metadata: unified={} channel={} nBits=0x{:08x}",
+        m_logger->info("[Solo GET_BLOCK] 📦 Metadata: unified={} channel={} nBits=0x{:08x}",
                        unified_height, channel_height, difficulty);
         if (!decoded.channel_consistent) {
-            m_logger->warn("[Solo Stateless] ⚠️  Channel mismatch: block.nChannel={} vs mining channel={}",
-                           decoded.block.nChannel, m_channel);
+            m_logger->warn("[Solo GET_BLOCK] ⚠️  Channel mismatch: block.nChannel={} vs mining channel={}",
+                            decoded.block.nChannel, m_channel);
         }
         if (!decoded.metadata_consistent) {
-            m_logger->warn("[Solo Stateless] ⚠️  Height mismatch: block.nHeight={} vs unified_height+1={}",
-                           decoded.block.nHeight, unified_height + 1);
+            m_logger->warn("[Solo GET_BLOCK] ⚠️  Height mismatch: block.nHeight={} vs unified_height+1={}",
+                            decoded.block.nHeight, unified_height + 1);
         }
 
 
@@ -4092,19 +4106,19 @@ void Solo::on_stateless_get_block(Packet const& packet, std::shared_ptr<network:
         // data to inflate the channel_target. BLOCK_DATA metadata is authoritative.
         if (channel_height > 0) {
             m_height_tracker.OnTemplateReceived(m_channel, channel_height + 1);
-            m_logger->info("[Solo Stateless] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
+            m_logger->info("[Solo GET_BLOCK] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
                 unified_height, channel_height, difficulty, channel_height + 1);
         }
 
         if (!finalize_and_feed_current_template(unified_height,
-                                                channel_height,
-                                                "Solo Stateless",
-                                                false)) {
-            m_logger->error("[Solo Stateless] Failed to finalize decoded template");
+                                                 channel_height,
+                                                 "Solo GET_BLOCK",
+                                                 false)) {
+            m_logger->error("[Solo GET_BLOCK] Failed to finalize decoded template");
             return;
         }
 
-        m_logger->info("[Solo Stateless] 🎯 Template ready! Mining for height {} (channel {})",
+        m_logger->info("[Solo GET_BLOCK] 🎯 Template ready! Mining for height {} (channel {})",
                        unified_height, channel_height);
 }
 

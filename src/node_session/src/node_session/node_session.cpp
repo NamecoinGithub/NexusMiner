@@ -642,6 +642,15 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
             } else {
                 m_logger->error("[NodeSession:{}] Malformed packet on {} connection",
                                 m_node_label, descriptor.label);
+                m_logger->error("[NodeSession:{}] Closing {} connection instead of byte-drop resync "
+                                "(lane={}, prefix=[{}])",
+                                m_node_label, descriptor.label, lane_name(lane_kind),
+                                format_prefix_hex(accumulator));
+                accumulator.clear();
+                if (connection) {
+                    connection->close();
+                }
+                return;
             }
             if (!accumulator.empty()) {
                 accumulator.pop_front();
