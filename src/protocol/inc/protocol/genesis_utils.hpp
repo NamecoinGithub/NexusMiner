@@ -80,8 +80,8 @@ inline bool looks_like_base58_address(const std::string& s) {
 inline std::vector<uint8_t> swap_genesis_word_order(const std::vector<uint8_t>& bytes) {
     if (bytes.size() != 32) return bytes;
     std::vector<uint8_t> out(32);
-    for (int i = 0; i < 8; ++i)
-        for (int j = 0; j < 4; ++j)
+    for (size_t i = 0; i < 8; ++i)
+        for (size_t j = 0; j < 4; ++j)
             out[i * 4 + j] = bytes[(7 - i) * 4 + j];
     return out;
 }
