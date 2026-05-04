@@ -2,6 +2,7 @@
 #include "config/config.hpp"
 #include "config/toml_config.hpp"
 #include <spdlog/spdlog.h>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -327,6 +328,39 @@ namespace config
 				else
 				{
 					m_logger->debug("mining.reward_address not specified - stateless reward binding disabled");
+				}
+
+				// Cross-validation: when both tritium_genesis (handshake) and reward_address
+				// (coinbase) are configured, they must refer to the same Tritium sigchain.
+				// A "DynamicGenesis" setup (signer ≠ reward) is not implemented end-to-end on
+				// the current node side; submitting a block whose coinbase recipient differs
+				// from the session's logged-in sigchain produces a Coinbase::Verify /
+				// signature failure on the node, observed at the miner only as a generic
+				// BLOCK_REJECTED with no reason byte. Fail fast at startup with a precise
+				// message instead of letting the user discover this only after a mined block
+				// is rejected.
+				if (!m_tritium_genesis.empty()
+				    && m_tritium_genesis.length() == GENESIS_HEX_LENGTH
+				    && !m_mining.m_reward_address.empty()
+				    && m_mining.m_reward_address.length() == GENESIS_HEX_LENGTH)
+				{
+					auto to_lower = [](std::string s) {
+						for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+						return s;
+					};
+					if (to_lower(m_tritium_genesis) != to_lower(m_mining.m_reward_address))
+					{
+						m_logger->critical(
+							"Configuration error: tritium_genesis and mining.reward_address refer to"
+							" different Tritium sigchains. The miner currently requires them to be"
+							" equal (the session signer must own the coinbase recipient). Mined blocks"
+							" would be rejected by the node's Coinbase::Verify / signature check."
+							" tritium_genesis='{}' reward_address='{}'."
+							" If you are auto-logged-in on the node, set BOTH fields to the genesis"
+							" hash reported by 'system/get/info' on that node.",
+							m_tritium_genesis, m_mining.m_reward_address);
+						return false;
+					}
 				}
 			}
 			else

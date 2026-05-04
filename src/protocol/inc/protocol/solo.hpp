@@ -699,6 +699,12 @@ private:
     // Stateless mining reward address binding (MINER_SET_REWARD protocol)
     std::string m_reward_address;  // NXS account address for mining rewards
     bool m_reward_bound;  // True after successful MINER_REWARD_RESULT
+
+    // True when the node-confirmed session genesis (echoed in SESSION_START) does
+    // not match the configured reward_address. The miner refuses to submit blocks
+    // in this state because the node's Coinbase::Verify / signature check will
+    // reject them — see Solo::submit_block. Cleared on disconnect/reauth.
+    bool m_reward_genesis_mismatch{false};
     
     // Push notification subscription state (MINER_READY sent after auth)
     std::atomic<bool> m_subscribed_to_notifications{false};

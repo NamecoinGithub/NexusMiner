@@ -590,6 +590,7 @@ void Solo::reset()
     m_auth_state = AuthState::NOT_AUTHENTICATED;
     m_auth_in_flight_since = {};
     m_reward_bound = false;  // Reset reward binding for new session
+    m_reward_genesis_mismatch = false;  // Re-evaluated on next SESSION_START
     m_subscribed_to_notifications = false;  // Reset push notification subscription
     m_pending_push_after_auth = false;
 
@@ -1610,6 +1611,17 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
+    // Refuse to submit when the node-confirmed session genesis (echoed in
+    // SESSION_START) did not match the configured reward_address. Submitting
+    // anyway would always be rejected by the node's Coinbase::Verify with no
+    // reason byte. See SESSION_START handler where this flag is set.
+    if (m_reward_genesis_mismatch) {
+        m_logger->error("[Solo Submit] Refusing to submit block: reward_address does not match"
+                        " the node's session genesis. Fix mining.reward_address to match the"
+                        " genesis hash returned by 'system/get/info' on the node and restart.");
+        return network::Shared_payload{};
+    }
+
     // ── Delegate to StatelessBlockUtility::encode_submit() ──────────────────
     // encode_submit() handles all pre-checks (nonce, channel, height, staleness),
     // worker-snapshot serialization, Disposable Falcon signing, and PacketBuilder
@@ -2542,10 +2554,23 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             m_logger->warn("[Solo] Block rejected on connection {}:{}", remote_addr, actual_port);
         }
 
-        m_logger->info("[Solo] Possible rejection reasons:");
-        m_logger->info("[Solo]   - Block already found by another miner (stale)");
-        m_logger->info("[Solo]   - Invalid proof-of-work (nonce doesn't meet difficulty)");
-        m_logger->info("[Solo]   - Blockchain reorganization occurred");
+        if (reason_str == "NONE") {
+            // Node sent BLOCK_REJECTED with no reason byte. The generic stale/PoW/reorg
+            // hint list is misleading here — the most common cause in this state is a
+            // coinbase/signature failure (reward_address points at a genesis the node's
+            // logged-in sigchain does not own). See Solo::send_set_reward + the
+            // SESSION_START reward-genesis cross-check.
+            m_logger->info("[Solo] Node sent rejection with no reason code. The most common cause is"
+                           " a coinbase signature failure, which happens when mining.reward_address"
+                           " refers to a different Tritium sigchain than the node's logged-in"
+                           " (auto-login) user. Verify reward_address matches the genesis hash"
+                           " reported by 'system/get/info' on the node you are connected to.");
+        } else {
+            m_logger->info("[Solo] Possible rejection reasons:");
+            m_logger->info("[Solo]   - Block already found by another miner (stale)");
+            m_logger->info("[Solo]   - Invalid proof-of-work (nonce doesn't meet difficulty)");
+            m_logger->info("[Solo]   - Blockchain reorganization occurred");
+        }
 
         // Special handling for FORK rejections: invalidate template and trigger recovery
         if (is_fork_rejection) {
@@ -3842,6 +3867,44 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             if (m_session_context) {
                 m_session_context->set_tritium_genesis(*parsed->genesis_hash);
             }
+
+            // Cross-check node-echoed session genesis against configured reward_address.
+            // The miner currently requires the session signer to own the coinbase
+            // recipient (no end-to-end DynamicGenesis). A mismatch produces a node-side
+            // Coinbase::Verify / signature failure that, on the wire, is just a
+            // BLOCK_REJECTED with no reason byte. Catch it here, refuse to submit, and
+            // log a precise message instead.
+            if (!m_reward_address.empty()
+                && parsed->genesis_hash->size() == 32
+                && m_reward_address.length() == 64)
+            {
+                std::vector<uint8_t> reward_bytes =
+                    genesis_utils::hex_decode_genesis_hash(m_reward_address);
+                if (reward_bytes.size() == 32 && reward_bytes != *parsed->genesis_hash) {
+                    auto bytes_to_hex = [](const std::vector<uint8_t>& b) {
+                        std::string s; s.reserve(b.size() * 2);
+                        static const char* kHex = "0123456789abcdef";
+                        for (uint8_t v : b) {
+                            s.push_back(kHex[v >> 4]);
+                            s.push_back(kHex[v & 0x0f]);
+                        }
+                        return s;
+                    };
+                    const std::string node_hex = bytes_to_hex(*parsed->genesis_hash);
+                    m_reward_genesis_mismatch = true;
+                    m_logger->error("[Solo Session] reward_address GENESIS MISMATCH:");
+                    m_logger->error("[Solo Session]   - reward_address (configured): {}", m_reward_address);
+                    m_logger->error("[Solo Session]   - node session genesis:        {}", node_hex);
+                    m_logger->error("[Solo Session] The miner will REFUSE to submit blocks until this is"
+                                    " corrected. The session signer (node auto-login) must own the coinbase"
+                                    " recipient, otherwise mined blocks fail Coinbase::Verify and are"
+                                    " rejected with no reason byte. Set mining.reward_address to the"
+                                    " genesis hash reported by 'system/get/info' on the node.");
+                } else if (reward_bytes.size() == 32) {
+                    m_reward_genesis_mismatch = false;
+                    m_logger->debug("[Solo Session] reward_address matches node session genesis ✓");
+                }
+            }
         }
 
         // Adjust keepalive interval based on timeout (ping at 1/N of timeout)
@@ -4499,6 +4562,7 @@ void Solo::handle_session_expired(SessionId expired_sid, uint8_t reason, std::sh
     m_current_height = 0;
     m_current_reward = 0;
     m_reward_bound = false;  // Reward binding dies with session
+    m_reward_genesis_mismatch = false;  // Re-evaluated after re-auth + SESSION_START
     m_subscribed_to_notifications = false;
 
     // Bug 1 fix: Clear in-flight GET_BLOCK so recovery can immediately
@@ -4709,11 +4773,19 @@ network::Shared_payload Solo::send_set_reward()
         return nullptr;
     }
 
-    // Validate mainnet genesis type byte (must be 0xa1 per Coinbase::Verify)
-    if (!genesis_utils::has_mainnet_genesis_type(vHash)) {
-        m_logger->warn("[Solo Reward] Genesis hash leading byte is 0x{:02x} — expected 0xa1 (mainnet)."
-                       " Block rewards will be rejected by Coinbase::Verify on mainnet.",
-                       static_cast<unsigned int>(vHash[0]));
+    // Validate genesis user-type byte: Coinbase::Verify on the node hard-rejects any
+    // genesis whose leading byte does not match the network user-type (0xa1 mainnet,
+    // 0xb1 testnet — see genesis_utils.hpp). Fail fast here instead of letting the
+    // node reject a mined block with no reason byte.
+    if (!genesis_utils::has_mainnet_genesis_type(vHash)
+        && !genesis_utils::has_testnet_genesis_type(vHash)) {
+        m_logger->error("[Solo Reward] Genesis hash leading byte is 0x{:02x} — expected 0xa1 (mainnet)"
+                        " or 0xb1 (testnet). Block rewards would be rejected by the node's"
+                        " Coinbase::Verify. Refusing to send MINER_SET_REWARD."
+                        " Verify reward_address matches the genesis hash returned by"
+                        " 'system/get/info' on the node you are connected to.",
+                        static_cast<unsigned int>(vHash[0]));
+        return nullptr;
     }
 
     // Build the payload - the hash bytes (will be encrypted by ChaCha20)
