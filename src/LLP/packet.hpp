@@ -110,17 +110,25 @@ namespace nexusminer
 		}
 		
 		// Helper to determine if a legacy opcode is header-only (no length field follows)
-		// Header-only opcodes: requests (128-199), simple responses (200-203),
-		// MINER_READY (216), PING (253), CLOSE (254)
-		// Data opcodes (0-127), NEW_ROUND (204), OLD_ROUND (205), and auth opcodes (206-218, except MINER_READY)
-		// always have length+payload
+		// Header-only opcodes: requests (128-199), MINER_READY (216), PING (253), CLOSE (254)
+		// Data opcodes (0-127), response opcodes (200-205), and auth opcodes (206-218, except MINER_READY)
+		// always have length+payload.
+		//
+		// NOTE on opcodes 200-203 (BLOCK_ACCEPTED/REJECTED, COINBASE_SET/FAIL):
+		//   These carry an optional 0-1 byte payload on the wire (e.g., a reason code).
+		//   LLL-TAO sends BLOCK_REJECTED (0xC9) with a 1-byte reason payload on the legacy
+		//   lane; classifying it as header-only causes `length != 0` → MALFORMED → connection
+		//   drop.  This matches the stateless lane where 0xD0C8/0xD0C9 are also data-bearing
+		//   (see is_stateless_header_only_opcode() BLOCK_ACCEPTED/BLOCK_REJECTED case).
 		inline bool is_legacy_header_only_opcode(uint8_t opcode) {
 			// Data packets (0-127): always have length + payload
 			if (opcode < 128) return false;
 			// Request packets (128-199): always header-only
 			if (opcode >= 128 && opcode <= 199) return true;
-			// Simple responses (200-203): header-only (ACCEPT, REJECT, COINBASE_SET, COINBASE_FAIL)
-			if (opcode >= 200 && opcode <= 203) return true;
+			// Response opcodes (200-203): data-bearing with 0-N byte optional payload.
+			// BLOCK_ACCEPTED (200), BLOCK_REJECTED (201), COINBASE_SET (202), COINBASE_FAIL (203)
+			// may carry a 1-byte reason code; the data-bearing parser path handles length=0 correctly.
+			if (opcode >= 200 && opcode <= 203) return false;
 			// NEW_ROUND (204) and OLD_ROUND (205): have length + payload (12 bytes preferred, legacy 16 bytes)
 			if (opcode == LLP::NEW_ROUND || opcode == LLP::OLD_ROUND) return false;
 			// Auth/session range (206-218): have length + payload, EXCEPT MINER_READY

@@ -64,6 +64,36 @@ inline bool looks_like_base58_address(const std::string& s) {
     return s.length() >= 40 && s.length() <= 60;
 }
 
+/** Convert between display-byte-order (GetHex / "human readable" MSW-first) and
+ *  the old wire-byte-order that pre-LLL-TAO-PR#578 nodes emitted via GetBytes()
+ *  (LSW-first word order).
+ *
+ *  Nexus base_uint<256> stores 8 uint32_t words (pn[0]=LSW … pn[7]=MSW).
+ *  - GetHex()   iterates raw bytes from the END → produces MSW-first display hex.
+ *  - GetBytes() iterates pn[0..7] big-endian per word → LSW first on the wire.
+ *
+ *  Historical note: before LLL-TAO PR #578, SessionStartPacket::BuildPayload
+ *  used GetBytes() to serialise the genesis field, producing LSW-first bytes.
+ *  The miner called this function to convert those wire bytes to display order
+ *  before comparing with the configured reward_address.  LLL-TAO PR #578 fixed
+ *  the node to emit genesis in display/MSW-first order, so the comparison in
+ *  solo.cpp no longer needs to call this function.
+ *
+ *  The function is retained for testing and to document the invariant: the
+ *  same 256-bit value has 8 uint32_t words in opposite order between GetHex()
+ *  display representation and the old GetBytes() wire representation.
+ *
+ *  It is its own inverse (applying it twice returns the original bytes).
+ *  Returns the input unchanged if size != 32. */
+inline std::vector<uint8_t> swap_genesis_word_order(const std::vector<uint8_t>& bytes) {
+    if (bytes.size() != 32) return bytes;
+    std::vector<uint8_t> out(32);
+    for (size_t i = 0; i < 8; ++i)
+        for (size_t j = 0; j < 4; ++j)
+            out[i * 4 + j] = bytes[(7 - i) * 4 + j];
+    return out;
+}
+
 /** Decode a 64-character hex string into a 32-byte genesis hash vector.
  *  Returns an empty vector on any decode error (wrong length, non-hex chars). */
 inline std::vector<uint8_t> hex_decode_genesis_hash(const std::string& hex) {

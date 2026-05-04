@@ -1018,59 +1018,107 @@ void test_round_legacy_16byte_payload() {
 }
 
 // ============================================================================
-// Test Case 22: ACCEPT/REJECT still header-only (regression check)
-// Ensure the fix doesn't break ACCEPT (200) and REJECT (201) classification
+// Test Case 22: Legacy response opcodes (200-203) are data-bearing
+//
+// Before this fix, BLOCK_ACCEPTED (200), BLOCK_REJECTED (201), COINBASE_SET (202),
+// COINBASE_FAIL (203) were classified as header-only (zero-length required).
+// The LLL-TAO node sends BLOCK_REJECTED (0xC9) with a 1-byte reason payload on
+// the legacy lane:
+//   Wire prefix observed in logs: [c9 00 00 00 01 06]
+//   → opcode=0xC9(201), length=1, reason=0x06
+// With the old classification the parser returned MALFORMED → connection drop.
+//
+// Fix: opcodes 200-203 are now data-bearing. The data-bearing path handles
+// length=0 correctly, so zero-length frames still parse.
 // ============================================================================
-void test_accept_reject_still_header_only() {
-    std::cout << "\nTest 22: ACCEPT/REJECT still header-only (regression check)" << std::endl;
-    
+void test_legacy_response_opcodes_are_data_bearing() {
+    std::cout << "\nTest 22: Legacy response opcodes (200-203) are data-bearing" << std::endl;
+
     TestAccumulator acc;
     Packet packet;
     ParseResult result;
-    
-    // ACCEPT (200) should still be accepted as an explicit zero-length frame.
+
+    // ── Zero-length forms (backward-compat: node may still send length=0) ──────
+
+    // ACCEPT (200) zero-length: must still parse via data-bearing path
     acc.feed({200, 0x00, 0x00, 0x00, 0x00});
-    
     bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test1 = parsed1 && 
+    bool test1 = parsed1 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 200) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("ACCEPT (200) explicit zero-length frame parsed", test1);
-    
-    // REJECT (201) should still be accepted as an explicit zero-length frame.
+    print_test_result("ACCEPT (200) zero-length frame parses via data-bearing path", test1);
+
+    // REJECT (201) zero-length: must still parse via data-bearing path
     acc.feed({201, 0x00, 0x00, 0x00, 0x00});
-    
     bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test2 = parsed2 && 
+    bool test2 = parsed2 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 201) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("REJECT (201) explicit zero-length frame parsed", test2);
-    
-    // COINBASE_SET (202) should still be accepted as an explicit zero-length frame.
+    print_test_result("REJECT (201) zero-length frame parses via data-bearing path", test2);
+
+    // COINBASE_SET (202) zero-length
     acc.feed({202, 0x00, 0x00, 0x00, 0x00});
-    
     bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test3 = parsed3 && 
+    bool test3 = parsed3 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 202) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_SET (202) explicit zero-length frame parsed", test3);
-    
-    // COINBASE_FAIL (203) should still be accepted as an explicit zero-length frame.
+    print_test_result("COINBASE_SET (202) zero-length frame parses", test3);
+
+    // COINBASE_FAIL (203) zero-length
     acc.feed({203, 0x00, 0x00, 0x00, 0x00});
-    
     bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
-    bool test4 = parsed4 && 
+    bool test4 = parsed4 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 203) &&
                  (packet.m_length == 0) &&
                  acc.empty();
-    print_test_result("COINBASE_FAIL (203) explicit zero-length frame parsed", test4);
+    print_test_result("COINBASE_FAIL (203) zero-length frame parses", test4);
+
+    // ── 1-byte payload forms ───────────────────────────────────────────────────
+
+    // REJECT (201) with 1-byte reason 0x06 — the exact wire prefix from the live
+    // miner log that broke the legacy lane:
+    //   [c9 00 00 00 01 06] → opcode=201, length=1, reason=0x06
+    // Was: MALFORMED (header-only check rejected length != 0)
+    // Now: SUCCESS with 1-byte payload
+    acc.feed({0xC9, 0x00, 0x00, 0x00, 0x01, 0x06});
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test5 = parsed5 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 201) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 1) &&
+                 ((*packet.m_data)[0] == 0x06) &&
+                 acc.empty();
+    print_test_result("REJECT (201) with 1-byte reason 0x06 parses correctly (log regression)", test5);
+
+    // ACCEPT (200) with 1-byte reason 0x01
+    acc.feed({0xC8, 0x00, 0x00, 0x00, 0x01, 0x01});
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test6 = parsed6 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 200) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 ((*packet.m_data)[0] == 0x01) &&
+                 acc.empty();
+    print_test_result("ACCEPT (200) with 1-byte reason parses correctly", test6);
+
+    // ── Fragmentation: partial REJECT+reason triggers NEED_MORE_DATA ──────────
+    acc.feed({0xC9, 0x00, 0x00, 0x00, 0x01}); // 5 bytes — length field present, data missing
+    bool parsed7 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test7 = !parsed7 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 5);
+    print_test_result("REJECT (201) + length but no reason byte → NEED_MORE_DATA", test7);
+    acc.clear();
 }
 
 // ============================================================================
@@ -1582,7 +1630,7 @@ int main() {
     test_new_round_with_payload();
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
-    test_accept_reject_still_header_only();
+    test_legacy_response_opcodes_are_data_bearing();
     test_stateless_get_block_with_payload();
     test_stateless_get_block_zero_length();
     test_legacy_get_block_template_forms();
