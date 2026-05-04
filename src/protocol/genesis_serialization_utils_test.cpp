@@ -148,6 +148,71 @@ void test_genesis_validation() {
     }
 }
 
+void test_swap_genesis_word_order() {
+    // Values taken directly from live miner logs (screenshot 2026-05-04):
+    //   reward_address (display/GetHex order):
+    //     a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122
+    //   node session genesis (wire/GetBytes order, echoed in SESSION_START):
+    //     308cd12245ac99a84395ea8fcd33d31582b167cabca5388393ca1c80a174011c
+    // These are the same 256-bit value with 8 uint32_t words in opposite order.
+
+    std::cout << "\nTest 20: swap_genesis_word_order - known display-vs-wire pair" << std::endl;
+    {
+        // Display-order bytes (from hex_decode_genesis_hash of the configured reward_address)
+        const std::vector<uint8_t> display_bytes = {
+            0xa1,0x74,0x01,0x1c, 0x93,0xca,0x1c,0x80,
+            0xbc,0xa5,0x38,0x83, 0x82,0xb1,0x67,0xca,
+            0xcd,0x33,0xd3,0x15, 0x43,0x95,0xea,0x8f,
+            0x45,0xac,0x99,0xa8, 0x30,0x8c,0xd1,0x22
+        };
+        // Wire-order bytes (GetBytes() / SESSION_START echo — LSW word first)
+        const std::vector<uint8_t> wire_bytes = {
+            0x30,0x8c,0xd1,0x22, 0x45,0xac,0x99,0xa8,
+            0x43,0x95,0xea,0x8f, 0xcd,0x33,0xd3,0x15,
+            0x82,0xb1,0x67,0xca, 0xbc,0xa5,0x38,0x83,
+            0x93,0xca,0x1c,0x80, 0xa1,0x74,0x01,0x1c
+        };
+
+        // swap(wire) == display
+        const auto swapped = genesis_utils::swap_genesis_word_order(wire_bytes);
+        test_assert(swapped == display_bytes,
+                    "swap_genesis_word_order(wire) == display bytes");
+
+        // swap(display) == wire  (function is its own inverse)
+        const auto swapped_back = genesis_utils::swap_genesis_word_order(display_bytes);
+        test_assert(swapped_back == wire_bytes,
+                    "swap_genesis_word_order(display) == wire bytes (inverse property)");
+
+        // Regression: after swap, reward_bytes == node_genesis_display (no false mismatch)
+        const auto reward_bytes =
+            genesis_utils::hex_decode_genesis_hash(
+                "a174011c93ca1c80bca5388382b167cacd33d3154395ea8f45ac99a8308cd122");
+        const auto node_genesis_display =
+            genesis_utils::swap_genesis_word_order(wire_bytes);
+        test_assert(reward_bytes == node_genesis_display,
+                    "hex_decoded reward_address == swap(node wire bytes) — no false mismatch");
+    }
+
+    std::cout << "\nTest 21: swap_genesis_word_order - round-trip identity" << std::endl;
+    {
+        std::vector<uint8_t> original(32);
+        for (int i = 0; i < 32; ++i) original[i] = static_cast<uint8_t>(i * 7 + 3);
+        const auto twice = genesis_utils::swap_genesis_word_order(
+                               genesis_utils::swap_genesis_word_order(original));
+        test_assert(twice == original, "Applying swap twice returns original bytes");
+    }
+
+    std::cout << "\nTest 22: swap_genesis_word_order - wrong size passthrough" << std::endl;
+    {
+        std::vector<uint8_t> short_vec = {0x01, 0x02, 0x03};
+        test_assert(genesis_utils::swap_genesis_word_order(short_vec) == short_vec,
+                    "Non-32-byte input returned unchanged");
+        std::vector<uint8_t> empty;
+        test_assert(genesis_utils::swap_genesis_word_order(empty) == empty,
+                    "Empty input returned unchanged");
+    }
+}
+
 void test_serialization_helpers() {
     std::cout << "\nTest 11: append_uint32_le - basic serialization" << std::endl;
     {
@@ -234,6 +299,7 @@ int main() {
     std::cout << "========================================" << std::endl;
 
     test_genesis_validation();
+    test_swap_genesis_word_order();
     test_serialization_helpers();
 
     std::cout << "\n========================================" << std::endl;

@@ -3874,13 +3874,23 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
             // Coinbase::Verify / signature failure that, on the wire, is just a
             // BLOCK_REJECTED with no reason byte. Catch it here, refuse to submit, and
             // log a precise message instead.
+            //
+            // NOTE on byte ordering: the node echoes genesis via base_uint::GetBytes()
+            // which serialises pn[0..7] (LSW first, each word big-endian) — "wire order".
+            // The configured reward_address was decoded from the GetHex() display string
+            // ("MSW first") obtained from 'system/get/info'. These represent the same
+            // 256-bit value with opposite word order. swap_genesis_word_order() converts
+            // wire order to display order so the two vectors become directly comparable.
             if (!m_reward_address.empty()
                 && parsed->genesis_hash->size() == 32
                 && m_reward_address.length() == 64)
             {
                 std::vector<uint8_t> reward_bytes =
                     genesis_utils::hex_decode_genesis_hash(m_reward_address);
-                if (reward_bytes.size() == 32 && reward_bytes != *parsed->genesis_hash) {
+                // Normalise node-echoed (wire) bytes to display order before comparing.
+                const auto node_genesis_display =
+                    genesis_utils::swap_genesis_word_order(*parsed->genesis_hash);
+                if (reward_bytes.size() == 32 && reward_bytes != node_genesis_display) {
                     auto bytes_to_hex = [](const std::vector<uint8_t>& b) {
                         std::string s; s.reserve(b.size() * 2);
                         static const char* kHex = "0123456789abcdef";
@@ -3890,7 +3900,8 @@ void Solo::on_miner_auth_response(Packet const& packet, std::shared_ptr<network:
                         }
                         return s;
                     };
-                    const std::string node_hex = bytes_to_hex(*parsed->genesis_hash);
+                    // Log node genesis in display order so it matches 'system/get/info'.
+                    const std::string node_hex = bytes_to_hex(node_genesis_display);
                     m_reward_genesis_mismatch = true;
                     m_logger->error("[Solo Session] reward_address GENESIS MISMATCH:");
                     m_logger->error("[Solo Session]   - reward_address (configured): {}", m_reward_address);
