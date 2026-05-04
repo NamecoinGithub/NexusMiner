@@ -772,6 +772,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_get_block_request_owner.clear();
     m_last_submitted_owner.clear();
     m_last_submitted_valid = false;
+    m_submit_result_pending = false;
     m_last_submitted_nonce = 0;
     m_last_submitted_prev_hash = uint1024_t(0);
     m_last_submitted_height = 0;
@@ -1721,6 +1722,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // so it doesn't need to re-read from a potentially-replaced template.
     // This metadata must mirror the solved snapshot, not the live template.
     m_last_submitted_valid     = true;
+    m_submit_result_pending    = true;
     m_last_submitted_owner     = capture_session_ownership();
     m_last_submitted_nonce     = block_to_submit.nNonce;
     m_last_submitted_prev_hash = block_to_submit.hashPrevBlock;
@@ -2339,6 +2341,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // don't depend on a template that may have been replaced since submission.
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
+        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2423,6 +2426,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // Use submitted block state (snapshotted at submit_block time).
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
+        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2473,7 +2477,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
-        if (!m_last_submitted_valid) {
+        if (!m_submit_result_pending) {
             const bool had_pending_get_block = m_pending_get_block.active;
             m_pending_get_block.clear();
             reset_get_block_dedup_state();
@@ -2492,6 +2496,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
         m_last_submitted_valid = false;
+        m_submit_result_pending = false;
 
         // Retrieve height and channel from last template for the diagnostic log.
         uint32_t rejected_height = 0;
