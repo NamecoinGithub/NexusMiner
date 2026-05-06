@@ -76,7 +76,7 @@ public:
         }
 
         // GET_BLOCK rapid-burst guard (mirrors get_block_dedup_guard.hpp DEDUP_WINDOW_MS).
-        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE) skip
+        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE) skip
         // this check entirely; bypass_height reasons still respect it.
         auto now_tp = std::chrono::steady_clock::now();
         if (!should_bypass_all_dedup(reason) &&
@@ -770,7 +770,7 @@ void test_cross_channel_unified_advance_resets_dedup() {
 // Test: GetBlockReason dedup bypass policy validation
 // ============================================================================
 // Validates the three-tier dedup policy defined in get_block_reason.hpp:
-//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE → skip everything
+//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
 //   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
 //   Note: HEALTH_CHANNEL_ADVANCE is in tier 2 (bypass_height)
@@ -790,6 +790,10 @@ void test_get_block_reason_dedup_policy() {
         should_bypass_all_dedup(GetBlockReason::RECOVERY_TIMER));
     print_test_result("RECOVERY_FORCED also bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::RECOVERY_FORCED));
+    print_test_result("BLOCK_ACCEPTED bypasses all dedup (spent template replacement)",
+        should_bypass_all_dedup(GetBlockReason::BLOCK_ACCEPTED));
+    print_test_result("BLOCK_ACCEPTED also bypasses height dedup (implied by bypass_all)",
+        should_bypass_height_dedup(GetBlockReason::BLOCK_ACCEPTED));
 
     // HEALTH_NO_TEMPLATE: bypass_all so the health timer always gets through even
     // when a push-triggered GET_BLOCK fired within the last 100ms.
@@ -873,6 +877,8 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::GET_ROUND_HEIGHT_PARITY)) == "get_round_height_parity");
     print_test_result("reason_name(BLOCK_REJECTED) returns expected name",
         std::string(reason_name(GetBlockReason::BLOCK_REJECTED)) == "block_rejected");
+    print_test_result("reason_name(BLOCK_ACCEPTED) returns expected name",
+        std::string(reason_name(GetBlockReason::BLOCK_ACCEPTED)) == "block_accepted");
     print_test_result("reason_name(PUSH_TIP_MOVED) returns expected name",
         std::string(reason_name(GetBlockReason::PUSH_TIP_MOVED)) == "push_tip_moved");
 }

@@ -71,6 +71,9 @@ namespace nexusminer
 
 		// Current mining template payload: 12-byte metadata prefix + 216-byte Tritium block.
 		static constexpr uint32_t GET_BLOCK_TEMPLATE_PAYLOAD_LENGTH = 228;
+
+		// Legacy opcodes >= 128 are request/response/control ranges, not mandatory-payload data opcodes.
+		static constexpr uint8_t LEGACY_REQUEST_OPCODE_MIN = 128;
 		
 		// Minimum legacy auth/session opcode (CHANNEL_ACK = 206)
 		// Opcodes 206-255 are always legacy single-byte format, never stateless
@@ -659,6 +662,33 @@ namespace nexusminer
 			// Special case: LOGIN message (legacy compatibility)
 			if (m_header == 0 && m_length == 0)
 				return "VALID: LOGIN message (legacy compatibility)";
+
+			if (m_header <= 0xFF)
+			{
+				std::uint8_t const legacy_header = static_cast<std::uint8_t>(m_header);
+				if (legacy_header == LLP::GET_BLOCK &&
+				    (m_length == 0 || PacketConstants::is_legacy_get_block_template_length(m_length)))
+				{
+					if (m_length == 0 || m_data)
+						return "VALID: Legacy GET_BLOCK request/template frame";
+					return "INVALID: Legacy GET_BLOCK template frame missing payload";
+				}
+
+				bool const is_header_only_request =
+					PacketConstants::is_legacy_header_only_opcode(legacy_header);
+				if (is_header_only_request && m_length == 0)
+					return "VALID: Header-only request packet";
+
+				if (is_header_only_request && m_length > 0)
+					return "INVALID: Header-only request packet has unexpected payload";
+
+				if (!is_header_only_request && m_length == 0 &&
+				    legacy_header >= PacketConstants::LEGACY_REQUEST_OPCODE_MIN)
+					return "VALID: Data-bearing packet with zero-length payload";
+
+				if (!is_header_only_request && m_length > 0 && m_data)
+					return "VALID: Data-bearing packet with payload";
+			}
 			
 			// Known header-only request packets
 			bool is_header_only_request = (m_header == GET_HEIGHT || 
@@ -716,6 +746,22 @@ namespace nexusminer
 			// Special case: LOGIN message (legacy compatibility)
 			if (m_header == 0 && m_length == 0)
 				return true;
+
+			if (m_header <= 0xFF)
+			{
+				std::uint8_t const legacy_header = static_cast<std::uint8_t>(m_header);
+				if (legacy_header == LLP::GET_BLOCK)
+					return m_length == 0 ||
+					       (PacketConstants::is_legacy_get_block_template_length(m_length) && m_data);
+
+				bool const is_header_only_request =
+					PacketConstants::is_legacy_header_only_opcode(legacy_header);
+				if (is_header_only_request)
+					return m_length == 0;
+				if (m_length == 0)
+					return legacy_header >= PacketConstants::LEGACY_REQUEST_OPCODE_MIN;
+				return static_cast<bool>(m_data);
+			}
 
 			// Known header-only request packets (even if opcode < 128 for legacy compatibility)
 			// Current opcodes: GET_HEIGHT=130, GET_BLOCK=129, MINER_READY=216, PING=253 (all >= 128)

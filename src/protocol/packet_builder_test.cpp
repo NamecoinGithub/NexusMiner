@@ -240,11 +240,57 @@ void test_unknown_lane_rejected() {
 }
 
 // ============================================================================
-// Test 12: submit_block plaintext layout size invariant
+// Test 12: Legacy submit-result response opcodes preserve payload framing
+// ============================================================================
+void test_legacy_submit_result_payloads() {
+    std::cout << "\nTest 12: Legacy submit-result response payloads\n";
+
+    auto accepted_zero = PacketBuilder::build(ProtocolLane::LEGACY, LLP::BLOCK_ACCEPTED);
+    bool zero_ok = accepted_zero && accepted_zero->size() == 5 &&
+                   (*accepted_zero)[0] == 0xC8 &&
+                   (*accepted_zero)[1] == 0x00 && (*accepted_zero)[2] == 0x00 &&
+                   (*accepted_zero)[3] == 0x00 && (*accepted_zero)[4] == 0x00;
+    print_test_result("Legacy BLOCK_ACCEPTED zero-length frame builds as [0xC8][len=0]", zero_ok);
+
+    std::vector<uint8_t> reason = {0x2A};
+    auto rejected_reason = PacketBuilder::build(ProtocolLane::LEGACY, LLP::BLOCK_REJECTED, reason);
+    bool reason_ok = rejected_reason && rejected_reason->size() == 6 &&
+                     (*rejected_reason)[0] == 0xC9 &&
+                     (*rejected_reason)[1] == 0x00 && (*rejected_reason)[2] == 0x00 &&
+                     (*rejected_reason)[3] == 0x00 && (*rejected_reason)[4] == 0x01 &&
+                     (*rejected_reason)[5] == 0x2A;
+    print_test_result("Legacy BLOCK_REJECTED one-byte reason builds as [0xC9][len=1][reason]", reason_ok);
+}
+
+// ============================================================================
+// Test 13: Stateless submit-result response opcodes mirror legacy payload forms
+// ============================================================================
+void test_stateless_submit_result_payloads() {
+    std::cout << "\nTest 13: Stateless submit-result response payloads\n";
+
+    auto accepted_zero = PacketBuilder::build(ProtocolLane::STATELESS, LLP::BLOCK_ACCEPTED);
+    bool zero_ok = accepted_zero && accepted_zero->size() == 6 &&
+                   (*accepted_zero)[0] == 0xD0 && (*accepted_zero)[1] == 0xC8 &&
+                   (*accepted_zero)[2] == 0x00 && (*accepted_zero)[3] == 0x00 &&
+                   (*accepted_zero)[4] == 0x00 && (*accepted_zero)[5] == 0x00;
+    print_test_result("Stateless BLOCK_ACCEPTED zero-length frame builds as [0xD0C8][len=0]", zero_ok);
+
+    std::vector<uint8_t> reason = {0x2A};
+    auto rejected_reason = PacketBuilder::build(ProtocolLane::STATELESS, LLP::BLOCK_REJECTED, reason);
+    bool reason_ok = rejected_reason && rejected_reason->size() == 7 &&
+                     (*rejected_reason)[0] == 0xD0 && (*rejected_reason)[1] == 0xC9 &&
+                     (*rejected_reason)[2] == 0x00 && (*rejected_reason)[3] == 0x00 &&
+                     (*rejected_reason)[4] == 0x00 && (*rejected_reason)[5] == 0x01 &&
+                     (*rejected_reason)[6] == 0x2A;
+    print_test_result("Stateless BLOCK_REJECTED one-byte reason builds as [0xD0C9][len=1][reason]", reason_ok);
+}
+
+// ============================================================================
+// Test 14: submit_block plaintext layout size invariant
 // Verifies the fixed-format plaintext is exactly block(216) + ts(8) + siglen(2) + sig(N)
 // ============================================================================
 void test_plaintext_layout_size() {
-    std::cout << "\nTest 12: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
+    std::cout << "\nTest 14: Plaintext layout size = 216 + 8 + 2 + sig_size\n";
     constexpr size_t BLOCK_SIZE = 216;
     constexpr size_t TIMESTAMP_SIZE = 8;
     constexpr size_t SIGLEN_FIELD_SIZE = 2;
@@ -279,6 +325,8 @@ int main() {
     test_large_payload_stateless();
     test_mirror_opcode_invariant();
     test_unknown_lane_rejected();
+    test_legacy_submit_result_payloads();
+    test_stateless_submit_result_payloads();
     test_plaintext_layout_size();
 
     std::cout << "\n========================================\n";

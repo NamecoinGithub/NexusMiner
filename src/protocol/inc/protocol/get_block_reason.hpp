@@ -42,6 +42,7 @@ enum class GetBlockReason : uint8_t {
     RECOVERY_TIMER,            ///< Forced recovery retry timer fired
 
     // ── Validation / session (Worker_manager + Solo layer) ───────────────────
+    BLOCK_ACCEPTED,            ///< Node accepted a submitted block; current template is spent
     VALIDATION_FAILURE,        ///< Template validation failed (hashPrevBlock mismatch)
     SESSION_REAUTH,            ///< Session re-authenticated, need fresh work
     HEIGHT_DRIFT,              ///< Template height drifted > threshold from chain
@@ -69,6 +70,10 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
     switch (reason) {
         case GetBlockReason::RECOVERY_FORCED:
         case GetBlockReason::RECOVERY_TIMER:
+        // After a submit succeeds the template that produced it is spent even if
+        // the node has not yet delivered a PUSH/BLOCK_DATA replacement.  This
+        // request must never be suppressed by rapid-burst or height dedup state.
+        case GetBlockReason::BLOCK_ACCEPTED:
         // When there is genuinely no valid template the height-based guard can
         // never fire (no template → guard passes), but the 100ms rapid-burst
         // guard can still suppress legitimate retries from the 30s health timer
@@ -158,6 +163,7 @@ inline const char* reason_name(GetBlockReason reason)
         case GetBlockReason::TEMPLATE_AGE_DEFERRED:   return "template_age_deferred";
         case GetBlockReason::RECOVERY_FORCED:         return "recovery_forced";
         case GetBlockReason::RECOVERY_TIMER:          return "recovery_timer";
+        case GetBlockReason::BLOCK_ACCEPTED:          return "block_accepted";
         case GetBlockReason::VALIDATION_FAILURE:      return "validation_failure";
         case GetBlockReason::SESSION_REAUTH:          return "session_reauth";
         case GetBlockReason::HEIGHT_DRIFT:            return "height_drift";
