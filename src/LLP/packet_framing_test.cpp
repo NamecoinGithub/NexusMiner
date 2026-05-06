@@ -1122,6 +1122,72 @@ void test_legacy_response_opcodes_are_data_bearing() {
 }
 
 // ============================================================================
+// Test Case 22b: Legacy submit-result opcodes mirror stateless framed behavior
+// ============================================================================
+void test_legacy_submit_result_compat_forms() {
+    std::cout << "\nTest 22b: Legacy submit-result opcode wire forms" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    acc.feed({0xC8});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 1);
+    print_test_result("Legacy BLOCK_ACCEPTED bare header waits for required len4", test1);
+    acc.clear();
+
+    acc.feed({0xC8, 0x00, 0x00, 0x00, 0x00});
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xC8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Legacy BLOCK_ACCEPTED explicit zero-length frame parsed", test2);
+
+    acc.feed({0xC8, 0xD8, 0x00, 0x00, 0x00});
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = !parsed3 &&
+                 (result == ParseResult::MALFORMED) &&
+                 acc.empty();
+    print_test_result("Legacy bare BLOCK_ACCEPTED followed by another packet is malformed", test3);
+
+    acc.feed({0xC8, 0x00, 0x00, 0x00, 0x00,
+              0xD8, 0x00, 0x00, 0x00, 0x00});
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool parsed5 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = parsed4 && parsed5 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD8) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Adjacent legacy framed BLOCK_ACCEPTED + MINER_READY parse correctly", test4);
+
+    acc.feed({0xC9, 0x00, 0x00, 0x00, 0x00});
+    bool parsed6 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test5 = parsed6 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xC9) &&
+                 (packet.m_length == 0) &&
+                 acc.empty();
+    print_test_result("Legacy BLOCK_REJECTED explicit zero-length frame parsed", test5);
+
+    acc.feed({0xC9, 0x00, 0x00, 0x00, 0x01, 0x04});
+    bool parsed7 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test6 = parsed7 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xC9) &&
+                 (packet.m_length == 1) &&
+                 (packet.m_data != nullptr) &&
+                 ((*packet.m_data)[0] == 0x04) &&
+                 acc.empty();
+    print_test_result("Legacy BLOCK_REJECTED one-byte reason frame parsed", test6);
+}
+
+// ============================================================================
 // Test Case 23: Stateless GET_BLOCK (0xD081) with 228-byte payload
 // On stateless lane, GET_BLOCK is a template push with 228-byte payload
 // ============================================================================
@@ -1577,6 +1643,44 @@ void test_stateless_block_accepted_followed_by_prime_available() {
 }
 
 // ============================================================================
+// Test Case 30b: Legacy production pattern matching stateless submit-result flow
+// ============================================================================
+void test_legacy_block_accepted_followed_by_prime_available() {
+    std::cout << "\nTest 30b: Legacy BLOCK_ACCEPTED + PRIME_BLOCK_AVAILABLE regression" << std::endl;
+
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    std::vector<uint8_t> stream;
+    stream.insert(stream.end(), {0xC8, 0x00, 0x00, 0x00, 0x00});
+
+    stream.insert(stream.end(), {0xD9, 0x00, 0x00, 0x00, 0x94});
+    for (int i = 0; i < 148; ++i) {
+        stream.push_back(static_cast<uint8_t>(i & 0xFF));
+    }
+
+    acc.feed(stream);
+
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = parsed1 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xC8) &&
+                 (packet.m_length == 0);
+    print_test_result("Legacy first packet: BLOCK_ACCEPTED SUCCESS (no MALFORMED)", test1);
+
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = parsed2 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD9) &&
+                 (packet.m_length == 148) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == 148) &&
+                 acc.empty();
+    print_test_result("Legacy second packet: PRIME_BLOCK_AVAILABLE SUCCESS, 148B payload, accumulator empty", test2);
+}
+
+// ============================================================================
 // Test Case 31: Cross-lane frame prefixes are recognizable before byte-drop resync
 // ============================================================================
 void test_cross_lane_prefix_detection() {
@@ -1631,6 +1735,7 @@ int main() {
     test_old_round_with_payload();
     test_round_legacy_16byte_payload();
     test_legacy_response_opcodes_are_data_bearing();
+    test_legacy_submit_result_compat_forms();
     test_stateless_get_block_with_payload();
     test_stateless_get_block_zero_length();
     test_legacy_get_block_template_forms();
@@ -1642,6 +1747,7 @@ int main() {
     test_stateless_block_rejected_framed_with_reason_byte();
     test_stateless_block_accepted_bare_form_is_rejected();
     test_stateless_block_accepted_followed_by_prime_available();
+    test_legacy_block_accepted_followed_by_prime_available();
     test_cross_lane_prefix_detection();
     
     std::cout << "\n========================================" << std::endl;

@@ -211,8 +211,14 @@ int main()
             PacketConstants::is_legacy_header_only_opcode(MinerLLP::GET_BLOCK));
         print_test_result("Legacy GET_ROUND (133): header-only",
             PacketConstants::is_legacy_header_only_opcode(MinerLLP::GET_ROUND));
-        print_test_result("Legacy ACCEPT (200): header-only",
-            PacketConstants::is_legacy_header_only_opcode(MinerLLP::ACCEPT));
+        print_test_result("Legacy ACCEPT (200): has payload",
+            !PacketConstants::is_legacy_header_only_opcode(MinerLLP::ACCEPT));
+        print_test_result("Legacy REJECT (201): has payload",
+            !PacketConstants::is_legacy_header_only_opcode(MinerLLP::REJECT));
+        print_test_result("Legacy COINBASE_SET (202): has payload",
+            !PacketConstants::is_legacy_header_only_opcode(MinerLLP::COINBASE_SET));
+        print_test_result("Legacy COINBASE_FAIL (203): has payload",
+            !PacketConstants::is_legacy_header_only_opcode(MinerLLP::COINBASE_FAIL));
         print_test_result("Legacy MINER_READY (216): header-only",
             PacketConstants::is_legacy_header_only_opcode(MinerLLP::MINER_READY));
         print_test_result("Legacy PING (253): header-only",
