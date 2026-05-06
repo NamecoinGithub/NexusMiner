@@ -41,6 +41,19 @@ std::string format_prefix_hex(const std::deque<uint8_t>& bytes, std::size_t max_
     return out;
 }
 
+bool is_submit_result_packet(const Packet& packet)
+{
+    if (packet.m_is_uint16_opcode) {
+        return packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED ||
+               packet.m_header == LLP::StatelessMining::BLOCK_REJECTED ||
+               packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED_COMPAT ||
+               packet.m_header == LLP::StatelessMining::BLOCK_REJECTED_COMPAT;
+    }
+
+    return packet.m_header == LLP::BLOCK_ACCEPTED ||
+           packet.m_header == LLP::BLOCK_REJECTED;
+}
+
 } // namespace
 
 NodeSession::NodeSession(
@@ -668,11 +681,10 @@ void NodeSession::process_lane_data(LaneSlot slot, network::Shared_payload&& rec
         }
 
         accumulator.erase(accumulator.begin(), accumulator.begin() + bytes_consumed);
-        // Stamp the post-accept window so that any residual zero-pad bytes from node
-        // builds that still use the bare 2-byte form (no length field) are absorbed
-        // at DEBUG level rather than ERROR/WARN.
-        if (packet.m_header == LLP::StatelessMining::BLOCK_ACCEPTED ||
-            packet.m_header == LLP::StatelessMining::BLOCK_REJECTED) {
+        // Stamp the post-accept window for both lanes so residual zero-pad bytes
+        // from old stateless or legacy submit-result writers are absorbed at
+        // DEBUG level rather than tearing down an otherwise healthy session.
+        if (is_submit_result_packet(packet)) {
             m_last_block_result_parsed_at = std::chrono::steady_clock::now();
         }
         protocol->process_messages(packet, connection);

@@ -2401,11 +2401,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // height values — the node has not sent a new push notification yet.
         reset_get_block_dedup_state();
 
-        // Request new work with recovery logic
-        // Use VALIDATION_FAILURE to bypass height dedup: the accepted-block template is now
-        // spent at the previous height; we need a fresh template even if unified_height
-        // hasn't advanced yet (push notification not received yet).
-        auto work_payload = get_work(GetBlockReason::VALIDATION_FAILURE);
+        // Request new work with recovery logic.
+        // BLOCK_ACCEPTED bypasses all dedup: the accepted-block template is now
+        // spent at the previous height, and legacy/stateless lanes must both force
+        // an authoritative replacement even if PUSH/BLOCK_DATA has not arrived yet.
+        auto work_payload = get_work(GetBlockReason::BLOCK_ACCEPTED);
         if (!work_payload || work_payload->empty()) {
             m_logger->error("[Solo] CRITICAL: GET_BLOCK request after ACCEPT returned empty payload!");
             m_logger->error("[Solo] Recovery: Retrying work request");
@@ -2423,7 +2423,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
             if (!queue_payload(connection, work_payload, "[Solo] Accepted-block GET_BLOCK")) {
                 return;
             }
-            mark_get_block_pending(GetBlockReason::VALIDATION_FAILURE);
+            mark_get_block_pending(GetBlockReason::BLOCK_ACCEPTED);
         }
     }
     // Handle legacy GOOD_BLOCK (opcode 6): some legacy nodes send this for valid-but-not-best blocks.
@@ -2467,9 +2467,9 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         }
 
         reset_get_block_dedup_state();
-        // VALIDATION_FAILURE bypasses height dedup: the accepted template is spent.
+        // BLOCK_ACCEPTED bypasses all dedup: the accepted template is spent.
         request_and_queue_get_block(connection,
-                                    GetBlockReason::VALIDATION_FAILURE,
+                                    GetBlockReason::BLOCK_ACCEPTED,
                                     "[Solo] GOOD_BLOCK GET_BLOCK");
     }
 }

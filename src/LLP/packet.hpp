@@ -662,7 +662,7 @@ namespace nexusminer
 			// Special case: LOGIN message (legacy compatibility)
 			if (m_header == 0 && m_length == 0)
 				return "VALID: LOGIN message (legacy compatibility)";
-			
+
 			if (m_header <= 0xFF)
 			{
 				std::uint8_t const legacy_header = static_cast<std::uint8_t>(m_header);

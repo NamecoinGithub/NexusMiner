@@ -1648,6 +1648,7 @@ void test_stateless_block_accepted_followed_by_prime_available() {
 void test_legacy_block_accepted_followed_by_prime_available() {
     std::cout << "\nTest 30b: Legacy BLOCK_ACCEPTED + PRIME_BLOCK_AVAILABLE regression" << std::endl;
 
+    constexpr int PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE = 148;
     TestAccumulator acc;
     Packet packet;
     ParseResult result;
@@ -1656,7 +1657,7 @@ void test_legacy_block_accepted_followed_by_prime_available() {
     stream.insert(stream.end(), {0xC8, 0x00, 0x00, 0x00, 0x00});
 
     stream.insert(stream.end(), {0xD9, 0x00, 0x00, 0x00, 0x94});
-    for (int i = 0; i < 148; ++i) {
+    for (int i = 0; i < PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE; ++i) {
         stream.push_back(static_cast<uint8_t>(i & 0xFF));
     }
 
@@ -1673,11 +1674,62 @@ void test_legacy_block_accepted_followed_by_prime_available() {
     bool test2 = parsed2 &&
                  (result == ParseResult::SUCCESS) &&
                  (packet.m_header == 0xD9) &&
-                 (packet.m_length == 148) &&
+                 (packet.m_length == PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE) &&
                  (packet.m_data != nullptr) &&
-                 (packet.m_data->size() == 148) &&
+                 (packet.m_data->size() == PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE) &&
                  acc.empty();
     print_test_result("Legacy second packet: PRIME_BLOCK_AVAILABLE SUCCESS, 148B payload, accumulator empty", test2);
+}
+
+// ============================================================================
+// Test Case 30c: Legacy submit-result fragmented across TCP reads
+// ============================================================================
+void test_legacy_block_accepted_fragmented_before_push() {
+    std::cout << "\nTest 30c: Legacy fragmented BLOCK_ACCEPTED + PRIME_BLOCK_AVAILABLE regression" << std::endl;
+
+    constexpr int PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE = 148;
+    TestAccumulator acc;
+    Packet packet;
+    ParseResult result;
+
+    acc.feed({0xC8});
+    bool parsed1 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test1 = !parsed1 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 1);
+    print_test_result("Legacy fragmented BLOCK_ACCEPTED keeps 1-byte header pending", test1);
+
+    acc.feed({0x00, 0x00});
+    bool parsed2 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test2 = !parsed2 &&
+                 (result == ParseResult::NEED_MORE_DATA) &&
+                 (acc.size() == 3);
+    print_test_result("Legacy fragmented BLOCK_ACCEPTED waits for full len4", test2);
+
+    std::vector<uint8_t> tail = {0x00, 0x00, 0xD9, 0x00, 0x00, 0x00, 0x94};
+    // Distinct non-zero payload bytes prove the accumulator drains exactly the
+    // accepted-block frame before parsing the following PUSH payload.
+    for (int i = 0; i < PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE; ++i) {
+        tail.push_back(static_cast<uint8_t>((0x80 + i) & 0xFF));
+    }
+    acc.feed(tail);
+
+    bool parsed3 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test3 = parsed3 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xC8) &&
+                 (packet.m_length == 0);
+    print_test_result("Legacy fragmented BLOCK_ACCEPTED completes when len4 arrives", test3);
+
+    bool parsed4 = acc.parse_one_packet(ProtocolLane::LEGACY, packet, result);
+    bool test4 = parsed4 &&
+                 (result == ParseResult::SUCCESS) &&
+                 (packet.m_header == 0xD9) &&
+                 (packet.m_length == PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE) &&
+                 (packet.m_data != nullptr) &&
+                 (packet.m_data->size() == PRIME_BLOCK_AVAILABLE_PAYLOAD_SIZE) &&
+                 acc.empty();
+    print_test_result("Legacy PUSH following fragmented accept parses after accumulator drain", test4);
 }
 
 // ============================================================================
@@ -1748,6 +1800,7 @@ int main() {
     test_stateless_block_accepted_bare_form_is_rejected();
     test_stateless_block_accepted_followed_by_prime_available();
     test_legacy_block_accepted_followed_by_prime_available();
+    test_legacy_block_accepted_fragmented_before_push();
     test_cross_lane_prefix_detection();
     
     std::cout << "\n========================================" << std::endl;
