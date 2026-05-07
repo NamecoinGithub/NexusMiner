@@ -72,6 +72,57 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
     return true;
 }
 
+uint32_t Solo::get_blocks_accepted() const
+{
+    return m_stats_collector ? m_stats_collector->get_global_stats().m_accepted_blocks : 0;
+}
+
+uint32_t Solo::get_blocks_rejected() const
+{
+    return m_stats_collector ? m_stats_collector->get_global_stats().m_rejected_blocks : 0;
+}
+
+SessionOwnershipStamp Solo::get_last_submitted_owner_snapshot() const
+{
+    std::scoped_lock lock(m_last_submitted_mutex);
+    return m_last_submitted_state.owner;
+}
+
+void Solo::store_last_submitted_state(const SessionOwnershipStamp& owner,
+                                      uint64_t nonce,
+                                      const uint1024_t& prev_hash,
+                                      uint32_t height,
+                                      uint32_t channel)
+{
+    std::scoped_lock lock(m_last_submitted_mutex);
+    m_last_submitted_state.valid = true;
+    m_last_submitted_state.owner = owner;
+    m_last_submitted_state.nonce = nonce;
+    m_last_submitted_state.prev_hash = prev_hash;
+    m_last_submitted_state.height = height;
+    m_last_submitted_state.channel = channel;
+}
+
+Solo::LastSubmittedBlockState Solo::get_last_submitted_state_snapshot() const
+{
+    std::scoped_lock lock(m_last_submitted_mutex);
+    return m_last_submitted_state;
+}
+
+Solo::LastSubmittedBlockState Solo::consume_last_submitted_state()
+{
+    std::scoped_lock lock(m_last_submitted_mutex);
+    auto state = m_last_submitted_state;
+    m_last_submitted_state.valid = false;
+    return state;
+}
+
+void Solo::clear_last_submitted_state()
+{
+    std::scoped_lock lock(m_last_submitted_mutex);
+    m_last_submitted_state.clear();
+}
+
 namespace {
 
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
@@ -387,8 +438,8 @@ void Solo::register_packet_handlers()
         }
     });
 
-    // Colin AI Diagnostic PING (0xE0)
-    m_packet_router.register_handler(0xE0, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
+    // Colin AI Diagnostic PING (stateless-only diagnostic opcode)
+    m_packet_router.register_handler(::LLP::ColinDiagOpcodes::PING_DIAG_LEGACY, [this](Pkt const& p, std::shared_ptr<network::Connection> c) {
         on_ping_diag(p, c);
     });
 
@@ -771,13 +822,8 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_session_status_request_owner.clear();
     m_last_reward_request_owner.clear();
     m_last_get_block_request_owner.clear();
-    m_last_submitted_owner.clear();
-    m_last_submitted_valid = false;
+    clear_last_submitted_state();
     m_submit_result_gate.clear();
-    m_last_submitted_nonce = 0;
-    m_last_submitted_prev_hash = uint1024_t(0);
-    m_last_submitted_height = 0;
-    m_last_submitted_channel = 0;
     m_session_id_mismatch_count = 0;
     m_preflight_reject_count = 0;
     m_unanswered_get_round_count.store(0, std::memory_order_release);
@@ -1733,13 +1779,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Snapshot submitted block state for the ACCEPT/GOOD_BLOCK handler
     // so it doesn't need to re-read from a potentially-replaced template.
     // This metadata must mirror the solved snapshot, not the live template.
-    m_last_submitted_valid     = true;
+    store_last_submitted_state(capture_session_ownership(),
+                               block_to_submit.nNonce,
+                               block_to_submit.hashPrevBlock,
+                               block_to_submit.nHeight,
+                               block_to_submit.nChannel);
     m_submit_result_gate.mark_pending();
-    m_last_submitted_owner     = capture_session_ownership();
-    m_last_submitted_nonce     = block_to_submit.nNonce;
-    m_last_submitted_prev_hash = block_to_submit.hashPrevBlock;
-    m_last_submitted_height    = block_to_submit.nHeight;
-    m_last_submitted_channel   = block_to_submit.nChannel;
 
     // Extract Prime channel vOffsets from block_data (bytes after the fixed 216-byte body).
     // For Hash channel block_data is exactly 216 bytes so this stays empty.
@@ -1760,6 +1805,8 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                         submit_result.rejection_reason);
         record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED,
                              submit_result.rejection_reason);
+        m_submit_result_gate.clear();
+        clear_last_submitted_state();
         return network::Shared_payload{};
     }
 
@@ -1775,13 +1822,15 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
         m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
+        m_submit_result_gate.clear();
+        clear_last_submitted_state();
         return network::Shared_payload{};
     }
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
-                         "unified_height=" + std::to_string(m_last_submitted_height) +
+                         "unified_height=" + std::to_string(block_to_submit.nHeight) +
                          " channel_height=" + std::to_string(tracker_channel_tip) +
                          " channel_target=" + std::to_string(template_channel_target) +
-                         " channel=" + std::to_string(m_last_submitted_channel) +
+                         " channel=" + std::to_string(block_to_submit.nChannel) +
                          " channel_height_marker=" +
                          std::string(is_channel_height(submit_snapshot.channel_tip_height) ? "true" : "false"));
 
@@ -2331,8 +2380,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
 void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+    const auto last_submitted_owner = get_last_submitted_owner_snapshot();
     PacketIngressPreflightOptions preflight;
-    preflight.owner = &m_last_submitted_owner;
+    preflight.owner = &last_submitted_owner;
     if (!run_packet_ingress_preflight("Solo BlockAccepted", preflight)) {
         return;
     }
@@ -2351,15 +2401,13 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
-        ++m_blocks_accepted;
 
         // Use submitted block state (snapshotted at submit_block time) so we
         // don't depend on a template that may have been replaced since submission.
-        const bool had_last_submitted = m_last_submitted_valid;
-        m_last_submitted_valid = false;
-        uint32_t accepted_height  = m_last_submitted_height;
-        uint32_t accepted_channel = m_last_submitted_channel;
-        if (!had_last_submitted) {
+        const auto submitted = consume_last_submitted_state();
+        uint32_t accepted_height  = submitted.height;
+        uint32_t accepted_channel = submitted.channel;
+        if (!submitted.valid) {
             // Fallback: submission state not populated (e.g. legacy path).
             // Warning: template may have been replaced since submission.
             m_logger->warn("BLOCK_ACCEPTED fallback: m_last_submitted_valid=false — "
@@ -2381,8 +2429,8 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // Notify Worker_manager to record in the mined-block cache.
         // Use submitted prev_hash and nonce rather than re-reading from template.
         if (m_block_accepted_handler) {
-            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
-                                     accepted_channel, m_last_submitted_nonce);
+            m_block_accepted_handler(accepted_height, submitted.prev_hash,
+                                     accepted_channel, submitted.nonce);
         }
         
         // Enhanced diagnostics: Log connection info for accepted block
@@ -2440,14 +2488,12 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
-        ++m_blocks_accepted;
 
         // Use submitted block state (snapshotted at submit_block time).
-        const bool had_last_submitted = m_last_submitted_valid;
-        m_last_submitted_valid = false;
-        uint32_t accepted_height  = m_last_submitted_height;
-        uint32_t accepted_channel = m_last_submitted_channel;
-        if (!had_last_submitted) {
+        const auto submitted = consume_last_submitted_state();
+        uint32_t accepted_height  = submitted.height;
+        uint32_t accepted_channel = submitted.channel;
+        if (!submitted.valid) {
             m_logger->warn("GOOD_BLOCK fallback: m_last_submitted_valid=false — "
                            "reading height/channel from current template (may reflect a newer block)");
             if (m_template_interface) {
@@ -2468,10 +2514,12 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // Notify Worker_manager to record in the mined-block cache.
         // Use submitted prev_hash and nonce rather than re-reading from template.
         if (m_block_accepted_handler) {
-            m_block_accepted_handler(accepted_height, m_last_submitted_prev_hash,
-                                     accepted_channel, m_last_submitted_nonce);
+            m_block_accepted_handler(accepted_height, submitted.prev_hash,
+                                     accepted_channel, submitted.nonce);
         }
 
+        m_last_block_accepted_time = std::chrono::steady_clock::now();
+        cancel_recovery_timer("GOOD_BLOCK");
         reset_get_block_dedup_state();
         // BLOCK_ACCEPTED bypasses all dedup: the accepted template is spent.
         request_and_queue_get_block(connection,
@@ -2505,8 +2553,9 @@ bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, Trigge
 
 void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
+    const auto last_submitted_owner = get_last_submitted_owner_snapshot();
     PacketIngressPreflightOptions preflight;
-    preflight.owner = &m_last_submitted_owner;
+    preflight.owner = &last_submitted_owner;
     if (!run_packet_ingress_preflight("Solo BlockRejected", preflight)) {
         return;
     }
@@ -2525,13 +2574,11 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
-        ++m_blocks_rejected;
-        const bool had_last_submitted = m_last_submitted_valid;
-        uint32_t rejected_height = m_last_submitted_height;
-        uint32_t rejected_channel = m_last_submitted_channel;
-        m_last_submitted_valid = false;
+        const auto submitted = consume_last_submitted_state();
+        uint32_t rejected_height = submitted.height;
+        uint32_t rejected_channel = submitted.channel;
 
-        if (!had_last_submitted) {
+        if (!submitted.valid) {
             // Fallback: submission state not populated (e.g. legacy path).
             // Warning: template may have been replaced since submission.
             m_logger->warn("BLOCK_REJECTED fallback: m_last_submitted_valid=false — "
@@ -2665,13 +2712,11 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
         stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
-        ++m_blocks_rejected;
 
-        const bool had_last_submitted = m_last_submitted_valid;
-        uint32_t rejected_height = m_last_submitted_height;
-        uint32_t rejected_channel = m_last_submitted_channel;
-        m_last_submitted_valid = false;
-        if (!had_last_submitted) {
+        const auto submitted = consume_last_submitted_state();
+        uint32_t rejected_height = submitted.height;
+        uint32_t rejected_channel = submitted.channel;
+        if (!submitted.valid) {
             m_logger->warn("ORPHAN_BLOCK fallback: m_last_submitted_valid=false — "
                            "reading height/channel from current template (may reflect a newer block)");
             rejected_height = 0;
@@ -3020,13 +3065,14 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         // 2s of a BLOCK_ACCEPTED is almost certainly our own block advancing the chain.
         // Log this so post-mortem analysis is a one-grep job (grep "SELF-induced").
         {
+            const auto submitted = get_last_submitted_state_snapshot();
             const auto since_accept_ms =
                 (m_last_block_accepted_time == std::chrono::steady_clock::time_point::min())
                 ? int64_t{-1}
                 : std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - m_last_block_accepted_time).count();
             const bool likely_self_induced =
-                (unified_height == m_last_submitted_height) &&
+                (unified_height == submitted.height) &&
                 (since_accept_ms >= 0) && (since_accept_ms < 2000);
             m_logger->info("[NEW_ROUND] {}-induced: unified_height={}, since_accept={}ms",
                            likely_self_induced ? "SELF" : "external",
@@ -4271,9 +4317,11 @@ void Solo::on_ping_diag(Packet const& packet, std::shared_ptr<network::Connectio
         auto pong_bytes = m_colin_ping_handler.HandlePing(payload, true /* stateless */);
         if(!pong_bytes.empty() && connection)
         {
-            /* PONG opcode: 0xD0E1 stateless (mirror-mapped by PacketBuilder) */
+            /* PONG opcode: stateless-only diagnostic pong (mirror-mapped by PacketBuilder) */
             if (queue_payload(connection,
-                              PacketBuilder::build(m_protocol_lane, 0xE1, pong_bytes),
+                              PacketBuilder::build(m_protocol_lane,
+                                                   static_cast<uint8_t>(::LLP::ColinDiagOpcodes::PONG_DIAG_LEGACY),
+                                                   pong_bytes),
                               "[Solo PONG]")) {
                 m_logger->debug("[Colin PING] PongFrame transmitted (seq #{})",
                     m_colin_ping_handler.last_received_ping().sequence);

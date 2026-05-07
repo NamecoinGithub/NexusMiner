@@ -12,10 +12,10 @@ network::Shared_payload PacketBuilder::build(ProtocolLane lane, uint8_t legacy_o
     }
     if (lane == ProtocolLane::STATELESS) {
         Packet pkt{ static_cast<uint16_t>(LLP::MirrorOpcode(legacy_opcode)) };
-        return pkt.get_bytes();
+        return pkt.get_bytes(lane);
     } else {
         Packet pkt{ static_cast<uint8_t>(legacy_opcode) };
-        return pkt.get_bytes();
+        return pkt.get_bytes(lane);
     }
 }
 
@@ -28,10 +28,10 @@ network::Shared_payload PacketBuilder::build(ProtocolLane lane, uint8_t legacy_o
     auto data = std::make_shared<network::Payload>(payload);
     if (lane == ProtocolLane::STATELESS) {
         Packet pkt{ static_cast<uint16_t>(LLP::MirrorOpcode(legacy_opcode)), data };
-        return pkt.get_bytes();
+        return pkt.get_bytes(lane);
     } else {
         Packet pkt{ static_cast<uint8_t>(legacy_opcode), data };
-        return pkt.get_bytes();
+        return pkt.get_bytes(lane);
     }
 }
 
