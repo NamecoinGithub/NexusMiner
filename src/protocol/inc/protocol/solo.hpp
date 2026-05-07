@@ -518,6 +518,7 @@ private:
     void on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    bool consume_pending_submit_result_or_warn(const char* opcode_name, bool trigger_recovery_on_stray);
     void on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel);
     void on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection);
