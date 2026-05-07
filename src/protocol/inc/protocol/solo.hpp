@@ -12,6 +12,7 @@
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
+#include "protocol/submit_result_gate.hpp"
 #include "protocol/epoch_coordinator.hpp"
 #include "protocol/get_block_reason.hpp"
 #include "protocol/get_block_dedup_guard.hpp"
@@ -739,7 +740,7 @@ private:
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
     // re-reading from a potentially-replaced template (Priority 2 fix).
     bool      m_last_submitted_valid{false};
-    bool      m_submit_result_pending{false};
+    SubmitResultGate m_submit_result_gate{};
     uint64_t  m_last_submitted_nonce{0};
     uint1024_t m_last_submitted_prev_hash{0};
     uint32_t  m_last_submitted_height{0};

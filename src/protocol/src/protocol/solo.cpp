@@ -773,7 +773,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_get_block_request_owner.clear();
     m_last_submitted_owner.clear();
     m_last_submitted_valid = false;
-    m_submit_result_pending = false;
+    m_submit_result_gate.clear();
     m_last_submitted_nonce = 0;
     m_last_submitted_prev_hash = uint1024_t(0);
     m_last_submitted_height = 0;
@@ -1734,7 +1734,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // so it doesn't need to re-read from a potentially-replaced template.
     // This metadata must mirror the solved snapshot, not the live template.
     m_last_submitted_valid     = true;
-    m_submit_result_pending    = true;
+    m_submit_result_gate.mark_pending();
     m_last_submitted_owner     = capture_session_ownership();
     m_last_submitted_nonce     = block_to_submit.nNonce;
     m_last_submitted_prev_hash = block_to_submit.hashPrevBlock;
@@ -2344,7 +2344,15 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat)
     {
-        stats::Global global_stats{};
+        if (!m_submit_result_gate.consume_pending()) {
+            const bool had_pending_get_block = m_pending_get_block.active;
+            m_logger->warn("[Solo] BLOCK_ACCEPTED received with no submitted block pending "
+                           "(pending_get_block={}) — not counting duplicate/stray acceptance",
+                           had_pending_get_block ? "true" : "false");
+            return;
+        }
+
+        stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
@@ -2353,7 +2361,6 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // don't depend on a template that may have been replaced since submission.
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2430,7 +2437,15 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as accepted for counter purposes.
     else if (matches_opcode(packet, LLP::GOOD_BLOCK))
     {
-        stats::Global global_stats{};
+        if (!m_submit_result_gate.consume_pending()) {
+            const bool had_pending_get_block = m_pending_get_block.active;
+            m_logger->warn("[Solo] GOOD_BLOCK received with no submitted block pending "
+                           "(pending_get_block={}) — not counting duplicate/stray acceptance",
+                           had_pending_get_block ? "true" : "false");
+            return;
+        }
+
+        stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
@@ -2438,7 +2453,6 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // Use submitted block state (snapshotted at submit_block time).
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2489,7 +2503,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
-        if (!m_submit_result_pending) {
+        if (!m_submit_result_gate.has_pending()) {
             const bool had_pending_get_block = m_pending_get_block.active;
             m_pending_get_block.clear();
             reset_get_block_dedup_state();
@@ -2503,12 +2517,12 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
             return;
         }
 
-        stats::Global global_stats{};
+        stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
+        m_submit_result_gate.clear();
 
         // Retrieve height and channel from last template for the diagnostic log.
         uint32_t rejected_height = 0;
@@ -2632,7 +2646,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as rejected for counter purposes.
     else if (matches_opcode(packet, LLP::ORPHAN_BLOCK))
     {
-        stats::Global global_stats{};
+        stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
