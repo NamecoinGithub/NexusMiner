@@ -10,6 +10,31 @@ namespace nexusminer {
 namespace stats
 {
 
+struct Global_delta
+{
+    std::uint32_t m_accepted_blocks{ 0 };
+    std::uint32_t m_rejected_blocks{ 0 };
+    std::uint32_t m_accepted_shares{ 0 };
+    std::uint32_t m_rejected_shares{ 0 };
+    std::uint32_t m_connection_retries{ 0 };
+
+    Global_delta& operator+=(Global_delta const& other)
+    {
+        m_accepted_blocks += other.m_accepted_blocks;
+        m_rejected_blocks += other.m_rejected_blocks;
+        m_accepted_shares += other.m_accepted_shares;
+        m_rejected_shares += other.m_rejected_shares;
+        m_connection_retries += other.m_connection_retries;
+
+        return *this;
+    }
+};
+
+struct Global_state
+{
+    bool m_degraded_mode{ false };  // Mining stopped due to invalid template
+};
+
 struct Global
 {
     std::uint32_t m_accepted_blocks{ 0 };
@@ -18,19 +43,6 @@ struct Global
     std::uint32_t m_rejected_shares{ 0 };
     std::uint32_t m_connection_retries{ 0 };
     bool m_degraded_mode{ false };  // Mining stopped due to invalid template
-
-    Global& operator+=(Global const& other)
-    {
-        m_accepted_blocks += other.m_accepted_blocks;
-        m_rejected_blocks += other.m_rejected_blocks;
-        m_accepted_shares += other.m_accepted_shares;
-        m_rejected_shares += other.m_rejected_shares;
-        m_connection_retries += other.m_connection_retries;
-        // Don't accumulate degraded_mode, use the latest state
-        m_degraded_mode = other.m_degraded_mode;
-
-        return *this;
-    }
 };
 
 struct Hash

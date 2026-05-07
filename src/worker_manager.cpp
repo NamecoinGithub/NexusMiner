@@ -1449,7 +1449,7 @@ void Worker_manager::retry_connect(network::Endpoint const& wallet_endpoint, boo
         m_primary_node_session->reset();
     }
 
-    stats::Global global_stats{};
+    stats::Global_delta global_stats{};
     global_stats.m_connection_retries = 1;
     m_stats_collector->update_global_stats(global_stats);
 
@@ -2099,9 +2099,7 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             // Template successfully adopted — reset GET_BLOCK mismatch backoff.
             m_get_block_backoff_ms    = 0;
             m_get_block_backoff_until = {};
-            auto global_stats = m_stats_collector->get_global_stats();
-            global_stats.m_degraded_mode = false;
-            m_stats_collector->update_global_stats(global_stats);
+            m_stats_collector->set_degraded_mode(false);
             break;
         }
         case RecoveryPhase::WAITING_TEMPLATE: {
@@ -2111,9 +2109,7 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
                 m_recovery.degraded_since = now;
                 ++m_degraded_enter_total;
             }
-            auto global_stats = m_stats_collector->get_global_stats();
-            global_stats.m_degraded_mode = true;
-            m_stats_collector->update_global_stats(global_stats);
+            m_stats_collector->set_degraded_mode(true);
             break;
         }
         case RecoveryPhase::SESSION_RECOVERY: {
@@ -2124,9 +2120,7 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
                 ++m_degraded_enter_total;
             }
             m_recovery.recovery_in_progress.store(true, std::memory_order_release);
-            auto global_stats = m_stats_collector->get_global_stats();
-            global_stats.m_degraded_mode = true;
-            m_stats_collector->update_global_stats(global_stats);
+            m_stats_collector->set_degraded_mode(true);
             break;
         }
         case RecoveryPhase::RECONNECTING: {
@@ -2134,9 +2128,7 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             break;
         }
         case RecoveryPhase::DEGRADED_MODE: {
-            auto global_stats = m_stats_collector->get_global_stats();
-            global_stats.m_degraded_mode = true;
-            m_stats_collector->update_global_stats(global_stats);
+            m_stats_collector->set_degraded_mode(true);
             break;
         }
     }
@@ -2228,6 +2220,7 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) 
     on_phase_enter(new_phase);
 
     if (new_phase == RecoveryPhase::HEALTHY && should_reset_stats_on_recovery_completion()) {
+        m_stats_collector->reset_global_counters();
         m_stats_collector->reset_start_time();
     }
     if (new_phase == RecoveryPhase::HEALTHY) {

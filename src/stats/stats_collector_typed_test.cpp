@@ -161,7 +161,7 @@ void test_global_and_worker_writes_run_concurrently()
     std::thread global_writer([&] {
         while (!start.load(std::memory_order_acquire)) {}
         for (int i = 0; i < iterations; ++i) {
-            nexusminer::stats::Global delta{};
+            nexusminer::stats::Global_delta delta{};
             delta.m_accepted_blocks = 1;
             pc.update_global_stats(delta);
         }
@@ -203,6 +203,55 @@ void test_global_and_worker_writes_run_concurrently()
     bool passed = final_global.m_accepted_blocks == static_cast<std::uint32_t>(iterations);
     print_result("Concurrent global+worker writers complete without deadlock and global count is exact",
                  passed);
+}
+
+void test_degraded_mode_setter_does_not_reaccumulate_counters()
+{
+    auto cfg = make_config(nexusminer::config::Mining_mode::HASH, 1);
+    nexusminer::stats::Hash_collector hc{cfg};
+
+    nexusminer::stats::Global_delta delta{};
+    delta.m_accepted_blocks = 1;
+    delta.m_rejected_blocks = 2;
+    delta.m_connection_retries = 3;
+    hc.update_global_stats(delta);
+
+    hc.set_degraded_mode(true);
+    hc.set_degraded_mode(false);
+    hc.set_degraded_mode(true);
+
+    auto global = hc.get_global_stats();
+    bool passed = global.m_accepted_blocks == 1 &&
+                  global.m_rejected_blocks == 2 &&
+                  global.m_connection_retries == 3 &&
+                  global.m_degraded_mode;
+    print_result("set_degraded_mode toggles state without re-adding global counters", passed);
+}
+
+void test_reset_global_counters_preserves_degraded_mode()
+{
+    auto cfg = make_config(nexusminer::config::Mining_mode::HASH, 1);
+    nexusminer::stats::Hash_collector hc{cfg};
+
+    nexusminer::stats::Global_delta delta{};
+    delta.m_accepted_blocks = 4;
+    delta.m_rejected_blocks = 5;
+    delta.m_accepted_shares = 6;
+    delta.m_rejected_shares = 7;
+    delta.m_connection_retries = 8;
+    hc.update_global_stats(delta);
+    hc.set_degraded_mode(true);
+
+    hc.reset_global_counters();
+
+    auto global = hc.get_global_stats();
+    bool passed = global.m_accepted_blocks == 0 &&
+                  global.m_rejected_blocks == 0 &&
+                  global.m_accepted_shares == 0 &&
+                  global.m_rejected_shares == 0 &&
+                  global.m_connection_retries == 0 &&
+                  global.m_degraded_mode;
+    print_result("reset_global_counters zeroes counters while preserving degraded mode", passed);
 }
 
 // ----------------------------------------------------------------------
@@ -292,6 +341,8 @@ int main()
     test_typed_worker_stats_round_trip();
     test_out_of_range_worker_id_does_not_crash();
     test_global_and_worker_writes_run_concurrently();
+    test_degraded_mode_setter_does_not_reaccumulate_counters();
+    test_reset_global_counters_preserves_degraded_mode();
 
     test_compute_prime_view_basic_gisps();
     test_compute_prime_view_degraded_zeros_gisps_only();

@@ -773,7 +773,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_get_block_request_owner.clear();
     m_last_submitted_owner.clear();
     m_last_submitted_valid = false;
-    m_submit_result_pending = false;
+    m_submit_result_gate.clear();
     m_last_submitted_nonce = 0;
     m_last_submitted_prev_hash = uint1024_t(0);
     m_last_submitted_height = 0;
@@ -1734,7 +1734,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // so it doesn't need to re-read from a potentially-replaced template.
     // This metadata must mirror the solved snapshot, not the live template.
     m_last_submitted_valid     = true;
-    m_submit_result_pending    = true;
+    m_submit_result_gate.mark_pending();
     m_last_submitted_owner     = capture_session_ownership();
     m_last_submitted_nonce     = block_to_submit.nNonce;
     m_last_submitted_prev_hash = block_to_submit.hashPrevBlock;
@@ -2344,7 +2344,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat)
     {
-        stats::Global global_stats{};
+        if (!consume_pending_submit_result_or_warn("BLOCK_ACCEPTED", TriggerRecoveryOnStray::No)) {
+            return;
+        }
+
+        stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
@@ -2353,7 +2357,6 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // don't depend on a template that may have been replaced since submission.
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2430,7 +2433,11 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as accepted for counter purposes.
     else if (matches_opcode(packet, LLP::GOOD_BLOCK))
     {
-        stats::Global global_stats{};
+        if (!consume_pending_submit_result_or_warn("GOOD_BLOCK", TriggerRecoveryOnStray::No)) {
+            return;
+        }
+
+        stats::Global_delta global_stats{};
         global_stats.m_accepted_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_accepted;
@@ -2438,7 +2445,6 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
         // Use submitted block state (snapshotted at submit_block time).
         const bool had_last_submitted = m_last_submitted_valid;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
         uint32_t accepted_height  = m_last_submitted_height;
         uint32_t accepted_channel = m_last_submitted_channel;
         if (!had_last_submitted) {
@@ -2474,6 +2480,29 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
     }
 }
 
+bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, TriggerRecoveryOnStray trigger_recovery)
+{
+    if (m_submit_result_gate.consume_pending()) {
+        return true;
+    }
+
+    const bool had_pending_get_block = m_pending_get_block.active;
+    m_logger->warn("[Solo] {} received with no submitted block pending "
+                   "(pending_get_block={}) — not counting duplicate/stray block result",
+                   opcode_name, had_pending_get_block ? "true" : "false");
+
+    if (trigger_recovery == TriggerRecoveryOnStray::Yes) {
+        m_pending_get_block.clear();
+        reset_get_block_dedup_state();
+        m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
+        if (m_recovery_handler) {
+            m_recovery_handler();
+        }
+    }
+
+    return false;
+}
+
 void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
     PacketIngressPreflightOptions preflight;
@@ -2489,35 +2518,32 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
-        if (!m_submit_result_pending) {
-            const bool had_pending_get_block = m_pending_get_block.active;
-            m_pending_get_block.clear();
-            reset_get_block_dedup_state();
-            m_logger->warn("[Solo] Protocol/template REJECT received with no submitted block pending "
-                           "(pending_get_block={}) — not counting as a mined block rejection",
-                           had_pending_get_block ? "true" : "false");
-            m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
-            if (m_recovery_handler) {
-                m_recovery_handler();
-            }
+        if (!consume_pending_submit_result_or_warn("BLOCK_REJECTED", TriggerRecoveryOnStray::Yes)) {
             return;
         }
 
-        stats::Global global_stats{};
+        stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
+        const bool had_last_submitted = m_last_submitted_valid;
+        uint32_t rejected_height = m_last_submitted_height;
+        uint32_t rejected_channel = m_last_submitted_channel;
         m_last_submitted_valid = false;
-        m_submit_result_pending = false;
 
-        // Retrieve height and channel from last template for the diagnostic log.
-        uint32_t rejected_height = 0;
-        uint32_t rejected_channel = m_channel;
-        if (m_template_interface) {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl) {
-                rejected_height = tmpl->block.nHeight;
-                rejected_channel = tmpl->block.nChannel;
+        if (!had_last_submitted) {
+            // Fallback: submission state not populated (e.g. legacy path).
+            // Warning: template may have been replaced since submission.
+            m_logger->warn("BLOCK_REJECTED fallback: m_last_submitted_valid=false — "
+                           "reading height/channel from current template (may reflect a newer block)");
+            rejected_height = 0;
+            rejected_channel = m_channel;
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    rejected_height = tmpl->block.nHeight;
+                    rejected_channel = tmpl->block.nChannel;
+                }
             }
         }
 
@@ -2632,18 +2658,30 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as rejected for counter purposes.
     else if (matches_opcode(packet, LLP::ORPHAN_BLOCK))
     {
-        stats::Global global_stats{};
+        if (!consume_pending_submit_result_or_warn("ORPHAN_BLOCK", TriggerRecoveryOnStray::Yes)) {
+            return;
+        }
+
+        stats::Global_delta global_stats{};
         global_stats.m_rejected_blocks = 1;
         m_stats_collector->update_global_stats(global_stats);
         ++m_blocks_rejected;
 
-        uint32_t rejected_height = 0;
-        uint32_t rejected_channel = m_channel;
-        if (m_template_interface) {
-            auto const* tmpl = m_template_interface->get_current_template();
-            if (tmpl) {
-                rejected_height = tmpl->block.nHeight;
-                rejected_channel = tmpl->block.nChannel;
+        const bool had_last_submitted = m_last_submitted_valid;
+        uint32_t rejected_height = m_last_submitted_height;
+        uint32_t rejected_channel = m_last_submitted_channel;
+        m_last_submitted_valid = false;
+        if (!had_last_submitted) {
+            m_logger->warn("ORPHAN_BLOCK fallback: m_last_submitted_valid=false — "
+                           "reading height/channel from current template (may reflect a newer block)");
+            rejected_height = 0;
+            rejected_channel = m_channel;
+            if (m_template_interface) {
+                auto const* tmpl = m_template_interface->get_current_template();
+                if (tmpl) {
+                    rejected_height = tmpl->block.nHeight;
+                    rejected_channel = tmpl->block.nChannel;
+                }
             }
         }
         m_logger->warn("❌ BLOCK REJECTED by node (Legacy Lane, ORPHAN_BLOCK) — height={} channel={}",

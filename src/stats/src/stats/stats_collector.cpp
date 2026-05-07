@@ -19,16 +19,35 @@ Collector::Collector(config::Config& config)
 {
 }
 
-void Collector::update_global_stats(Global const& delta)
+void Collector::update_global_stats(Global_delta const& delta)
 {
     std::scoped_lock lock(m_global_mutex);
-    m_global_stats += delta;
+    m_global_counters += delta;
 }
 
 Global Collector::get_global_stats() const
 {
     std::scoped_lock lock(m_global_mutex);
-    return m_global_stats;
+    return Global{
+        m_global_counters.m_accepted_blocks,
+        m_global_counters.m_rejected_blocks,
+        m_global_counters.m_accepted_shares,
+        m_global_counters.m_rejected_shares,
+        m_global_counters.m_connection_retries,
+        m_global_state.m_degraded_mode
+    };
+}
+
+void Collector::set_degraded_mode(bool degraded)
+{
+    std::scoped_lock lock(m_global_mutex);
+    m_global_state.m_degraded_mode = degraded;
+}
+
+void Collector::reset_global_counters()
+{
+    std::scoped_lock lock(m_global_mutex);
+    m_global_counters = Global_delta{};
 }
 
 std::chrono::duration<double> Collector::get_elapsed_time_seconds() const

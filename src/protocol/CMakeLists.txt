@@ -131,6 +131,10 @@ add_nexusminer_test(NAME prepare_block_submission_from_solved_test
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC}
                  ${CMAKE_SOURCE_DIR}/src/worker)
 
+add_nexusminer_test(NAME submit_result_gate_test
+    SOURCES     submit_result_gate_test.cpp
+    LINK_LIBS   protocol)
+
 add_nexusminer_test(NAME first_block_acceptance_test
     SOURCES     first_block_acceptance_test.cpp
                 ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp

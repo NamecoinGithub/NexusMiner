@@ -35,8 +35,10 @@ public:
     std::size_t worker_count() const noexcept { return m_worker_count; }
 
     // ---- Global stats ----------------------------------------------------
-    void update_global_stats(Global const& delta);
+    void update_global_stats(Global_delta const& delta);
     Global get_global_stats() const;
+    void set_degraded_mode(bool degraded);
+    void reset_global_counters();
 
     // ---- Elapsed time ----------------------------------------------------
     std::chrono::duration<double> get_elapsed_time_seconds() const;
@@ -54,7 +56,8 @@ private:
     config::Mining_mode m_mining_mode;
     std::size_t m_worker_count;
 
-    Global m_global_stats;
+    Global_delta m_global_counters;
+    Global_state m_global_state;
     std::chrono::steady_clock::time_point m_start_time;
 
     // Single mutex for global-stats and start-time; both are tiny and the

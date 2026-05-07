@@ -12,6 +12,7 @@
 #include "protocol/session_ingress_gate.hpp"
 #include "protocol/session_recovery_policy.hpp"
 #include "protocol/submit_context.hpp"
+#include "protocol/submit_result_gate.hpp"
 #include "protocol/epoch_coordinator.hpp"
 #include "protocol/get_block_reason.hpp"
 #include "protocol/get_block_dedup_guard.hpp"
@@ -517,6 +518,8 @@ private:
     void on_session_expired(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_block_accepted(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_block_rejected(Packet const& packet, std::shared_ptr<network::Connection> connection);
+    enum class TriggerRecoveryOnStray { No, Yes };
+    bool consume_pending_submit_result_or_warn(const char* opcode_name, TriggerRecoveryOnStray trigger_recovery);
     void on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection);
     void on_push_notification(Packet const& packet, std::shared_ptr<network::Connection> connection, uint32_t channel);
     void on_ping_diag(Packet const& packet, std::shared_ptr<network::Connection> connection);
@@ -739,7 +742,7 @@ private:
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
     // re-reading from a potentially-replaced template (Priority 2 fix).
     bool      m_last_submitted_valid{false};
-    bool      m_submit_result_pending{false};
+    SubmitResultGate m_submit_result_gate{};
     uint64_t  m_last_submitted_nonce{0};
     uint1024_t m_last_submitted_prev_hash{0};
     uint32_t  m_last_submitted_height{0};
