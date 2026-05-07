@@ -2344,7 +2344,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::ACCEPT) || is_block_accepted_compat)
     {
-        if (!consume_pending_submit_result_or_warn("BLOCK_ACCEPTED", false)) {
+        if (!consume_pending_submit_result_or_warn("BLOCK_ACCEPTED", TriggerRecoveryOnStray::No)) {
             return;
         }
 
@@ -2433,7 +2433,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as accepted for counter purposes.
     else if (matches_opcode(packet, LLP::GOOD_BLOCK))
     {
-        if (!consume_pending_submit_result_or_warn("GOOD_BLOCK", false)) {
+        if (!consume_pending_submit_result_or_warn("GOOD_BLOCK", TriggerRecoveryOnStray::No)) {
             return;
         }
 
@@ -2480,7 +2480,7 @@ void Solo::on_block_accepted(Packet const& packet, std::shared_ptr<network::Conn
     }
 }
 
-bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, bool trigger_recovery_on_stray)
+bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, TriggerRecoveryOnStray trigger_recovery)
 {
     if (m_submit_result_gate.consume_pending()) {
         return true;
@@ -2491,7 +2491,7 @@ bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, bool t
                    "(pending_get_block={}) — not counting duplicate/stray block result",
                    opcode_name, had_pending_get_block ? "true" : "false");
 
-    if (trigger_recovery_on_stray) {
+    if (trigger_recovery == TriggerRecoveryOnStray::Yes) {
         m_pending_get_block.clear();
         reset_get_block_dedup_state();
         m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
@@ -2518,7 +2518,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
 
     if (matches_opcode(packet, Packet::REJECT) || is_block_rejected_compat)
     {
-        if (!consume_pending_submit_result_or_warn("BLOCK_REJECTED", true)) {
+        if (!consume_pending_submit_result_or_warn("BLOCK_REJECTED", TriggerRecoveryOnStray::Yes)) {
             return;
         }
 
@@ -2658,7 +2658,7 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
     // Treat as rejected for counter purposes.
     else if (matches_opcode(packet, LLP::ORPHAN_BLOCK))
     {
-        if (!consume_pending_submit_result_or_warn("ORPHAN_BLOCK", true)) {
+        if (!consume_pending_submit_result_or_warn("ORPHAN_BLOCK", TriggerRecoveryOnStray::Yes)) {
             return;
         }
 

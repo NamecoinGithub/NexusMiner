@@ -46,7 +46,7 @@ void test_gate_clear_drops_pending_result()
                  !gate.has_pending() && !gate.consume_pending());
 }
 
-struct LegacyBlockResultHarness
+struct BlockResultHarness
 {
     nexusminer::protocol::SubmitResultGate gate;
     int accepted{0};
@@ -75,7 +75,7 @@ struct LegacyBlockResultHarness
 
 void test_legacy_acceptance_results_are_idempotent()
 {
-    LegacyBlockResultHarness harness;
+    BlockResultHarness harness;
     harness.gate.mark_pending();
 
     const bool first_good_block_counted = harness.accept_result();
@@ -91,7 +91,7 @@ void test_legacy_acceptance_results_are_idempotent()
 
 void test_legacy_orphan_results_require_pending_submit()
 {
-    LegacyBlockResultHarness harness;
+    BlockResultHarness harness;
 
     const bool stray_orphan_ignored = !harness.reject_result();
     harness.gate.mark_pending();
