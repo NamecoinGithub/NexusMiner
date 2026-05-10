@@ -113,7 +113,7 @@ Solo::LastSubmittedBlockState Solo::consume_last_submitted_state()
 {
     std::scoped_lock lock(m_last_submitted_mutex);
     auto state = m_last_submitted_state;
-    m_last_submitted_state.valid = false;
+    m_last_submitted_state.clear();
     return state;
 }
 
