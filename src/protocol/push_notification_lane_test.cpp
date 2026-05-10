@@ -1129,9 +1129,9 @@ int main()
     }
 
     // ====================================================================
-    // Test 23b: First PUSH after silence disarms GET_ROUND fallback mode
+    // Test 24: First PUSH after silence disarms GET_ROUND fallback mode
     // ====================================================================
-    std::cout << "\nTest 23b: First PUSH after silence disarms GET_ROUND fallback mode" << std::endl;
+    std::cout << "\nTest 24: First PUSH after silence disarms GET_ROUND fallback mode" << std::endl;
     {
         bool fallback_mode_armed = false;
         auto on_get_round_parity = [&](int64_t since_push_s, uint32_t node_channel_height, uint32_t template_target_height) {
@@ -1154,10 +1154,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 24: NEW_ROUND remains authoritative when unified advances even if
+    // Test 25: NEW_ROUND remains authoritative when unified advances even if
     //          the active channel height is unchanged
     // ====================================================================
-    std::cout << "\nTest 24: NEW_ROUND resets polling when unified advances with unchanged Prime height" << std::endl;
+    std::cout << "\nTest 25: NEW_ROUND resets polling when unified advances with unchanged Prime height" << std::endl;
     {
         auto session_manager = std::make_shared<protocol::SessionManager>();
         auto session_context = std::make_shared<protocol::NodeSessionContext>(session_manager);
@@ -1183,10 +1183,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 25: Cross-channel (Hash) PUSH requests fresh template for Prime miner
+    // Test 26: Cross-channel (Hash) PUSH requests fresh template for Prime miner
     //          when unified tip advances on the other channel
     // ====================================================================
-    std::cout << "\nTest 25: Cross-channel Hash PUSH requests work for Prime miner when unified advances" << std::endl;
+    std::cout << "\nTest 26: Cross-channel Hash PUSH requests work for Prime miner when unified advances" << std::endl;
     {
         // Prime miner receives a Hash block PUSH.  The handler must detect that the
         // unified tip advanced and request a fresh template — every unified height
@@ -1225,10 +1225,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 26: Cross-channel push with tip advance — update_height_fn called,
+    // Test 27: Cross-channel push with tip advance — update_height_fn called,
     //          height state updated, returns true (Bug 1 regression)
     // ====================================================================
-    std::cout << "\nTest 26: Cross-channel tip advance updates height state via update_height_fn" << std::endl;
+    std::cout << "\nTest 27: Cross-channel tip advance updates height state via update_height_fn" << std::endl;
     {
         // Prime miner receives a Hash block PUSH at a higher unified height.
         // After the fix, update_height_fn must be called inside the cross-channel branch
@@ -1273,10 +1273,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 27: Cross-channel push with same height (liveness) — update_height_fn
+    // Test 28: Cross-channel push with same height (liveness) — update_height_fn
     //          NOT called, returns false (Bug 1 — dedup working)
     // ====================================================================
-    std::cout << "\nTest 27: Cross-channel liveness push (same height) does not call update_height_fn and returns false" << std::endl;
+    std::cout << "\nTest 28: Cross-channel liveness push (same height) does not call update_height_fn and returns false" << std::endl;
     {
         protocol::HeightTracker tracker;
         // Seed canonical state so push at same height is treated as liveness
@@ -1306,10 +1306,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 28: Cross-channel 148-byte push — hashBestChain stored via
+    // Test 29: Cross-channel 148-byte push — hashBestChain stored via
     //          UpdatePushTipAnchor (Bug 2 regression test)
     // ====================================================================
-    std::cout << "\nTest 28: Cross-channel 148-byte push stores hashBestChain in HeightTracker" << std::endl;
+    std::cout << "\nTest 29: Cross-channel 148-byte push stores hashBestChain in HeightTracker" << std::endl;
     {
         protocol::HeightTracker tracker;
         tracker.OnPushNotification(100, 50, 0x1d00ffff);
@@ -1356,10 +1356,10 @@ int main()
     }
 
     // ====================================================================
-    // Test 29: Two sequential cross-channel pushes at same height — second
+    // Test 30: Two sequential cross-channel pushes at same height — second
     //          push returns false (dedup working after Bug 1 fix)
     // ====================================================================
-    std::cout << "\nTest 29: Two sequential cross-channel pushes at same height — second returns false" << std::endl;
+    std::cout << "\nTest 30: Two sequential cross-channel pushes at same height — second returns false" << std::endl;
     {
         // After Bug 1 fix, update_height_fn is called on the first cross-channel push,
         // so HeightTracker records unified=101.  The second push at unified=101 must
