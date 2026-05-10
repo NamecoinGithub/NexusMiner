@@ -28,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 
 namespace nexusminer {
 namespace network { class Connection; }
@@ -257,8 +258,8 @@ public:
     void set_session_start_handler(Session_start_handler h) { m_session_start_handler = std::move(h); }
 
     // Block-result counters (Gap 3)
-    uint32_t get_blocks_accepted() const { return m_blocks_accepted.load(); }
-    uint32_t get_blocks_rejected() const { return m_blocks_rejected.load(); }
+    uint32_t get_blocks_accepted() const;
+    uint32_t get_blocks_rejected() const;
 
     // Shadow-ban telemetry: consecutive unanswered GET_ROUNDs and preflight rejections
     uint32_t get_unanswered_get_round_count() const { return m_unanswered_get_round_count.load(std::memory_order_acquire); }
@@ -489,6 +490,36 @@ private:
      */
     bool apply_channel_manager_update(uint32_t unified_height, uint32_t channel_height);
 
+    struct LastSubmittedBlockState {
+        bool valid{false};
+        SessionOwnershipStamp owner{};
+        uint64_t nonce{0};
+        uint1024_t prev_hash{0};
+        uint32_t height{0};
+        uint32_t channel{0};
+
+        void clear()
+        {
+            valid = false;
+            owner.clear();
+            nonce = 0;
+            prev_hash = uint1024_t(0);
+            height = 0;
+            channel = 0;
+        }
+    };
+
+    SessionOwnershipStamp get_last_submitted_owner_snapshot() const;
+    void store_last_submitted_state(const SessionOwnershipStamp& owner,
+                                    uint64_t nonce,
+                                    const uint1024_t& prev_hash,
+                                    uint32_t height,
+                                    uint32_t channel);
+    LastSubmittedBlockState get_last_submitted_state_snapshot() const;
+    LastSubmittedBlockState consume_last_submitted_state();
+    void clear_last_submitted_state();
+    void clear_pending_submit_result_state();
+
     /**
      * @brief Unified height-state updater (single source of truth for both HeightTracker and ClientChannelManager)
      *
@@ -540,9 +571,7 @@ private:
     // hashPrevBlock signals that the chain tip has moved.
     uint1024_t m_last_known_hash_prev_block;
 
-    // Block-result counters (Gap 3): incremented by BLOCK_ACCEPTED / BLOCK_REJECTED handlers.
-    std::atomic<uint32_t> m_blocks_accepted{0};
-    std::atomic<uint32_t> m_blocks_rejected{0};
+    // Block-result counters are sourced from m_stats_collector Global stats.
     
     // Falcon miner authentication state (Phase 2)
     std::vector<uint8_t> m_miner_pubkey;
@@ -683,7 +712,8 @@ private:
     mutable SessionOwnershipStamp m_last_session_status_request_owner{};
     SessionOwnershipStamp m_last_reward_request_owner{};
     SessionOwnershipStamp m_last_get_block_request_owner{};
-    SessionOwnershipStamp m_last_submitted_owner{};
+    mutable std::mutex m_last_submitted_mutex;
+    LastSubmittedBlockState m_last_submitted_state{};
 
     // Mining Template Interface for unified READ/FEED operations
     std::unique_ptr<MiningTemplateInterface> m_template_interface;
@@ -738,15 +768,10 @@ private:
     // and set reconnect backoff.
     Node_shutdown_handler m_node_shutdown_handler;
 
-    // Last submitted block state — carried forward from submit_block() so the
+    // Last submitted block gate/state — carried forward from submit_block() so the
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than
     // re-reading from a potentially-replaced template (Priority 2 fix).
-    bool      m_last_submitted_valid{false};
     SubmitResultGate m_submit_result_gate{};
-    uint64_t  m_last_submitted_nonce{0};
-    uint1024_t m_last_submitted_prev_hash{0};
-    uint32_t  m_last_submitted_height{0};
-    uint32_t  m_last_submitted_channel{0};
     
     // GET_ROUND status tracking (Template Staleness Prevention - LLL-TAO PR #131)
     RoundStatus m_last_round_status;  // Last received round status

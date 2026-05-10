@@ -1,6 +1,9 @@
 #include "protocol/submit_result_gate.hpp"
 
+#include <atomic>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -44,6 +47,32 @@ void test_gate_clear_drops_pending_result()
 
     print_result("SubmitResultGate clear drops pending submit result",
                  !gate.has_pending() && !gate.consume_pending());
+}
+
+void test_gate_concurrent_consume_wins_once()
+{
+    nexusminer::protocol::SubmitResultGate gate;
+    gate.mark_pending();
+
+    std::atomic<int> winners{0};
+    std::vector<std::thread> threads;
+    threads.reserve(16);
+
+    for (int i = 0; i < 16; ++i) {
+        threads.emplace_back([&]() {
+            if (gate.consume_pending()) {
+                winners.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    print_result("SubmitResultGate concurrent consume has exactly one winner",
+                 winners.load(std::memory_order_relaxed) == 1 &&
+                 !gate.has_pending());
 }
 
 struct BlockResultHarness
@@ -113,6 +142,7 @@ int main()
 {
     test_gate_consumes_exactly_once();
     test_gate_clear_drops_pending_result();
+    test_gate_concurrent_consume_wins_once();
     test_legacy_acceptance_results_are_idempotent();
     test_legacy_orphan_results_require_pending_submit();
 
