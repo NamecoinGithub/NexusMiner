@@ -135,6 +135,13 @@ public:
     // cadence) may request GET_BLOCK.  Set to match TEMPLATE_AGE_WARNING_SECONDS so
     // the GET_ROUND fallback arms BEFORE the 600s emergency timeout fires.
     static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 480;
+    /// Guard window (ms) during which a received BLOCK_AVAILABLE push implies BLOCK_DATA
+    /// is already in transit from the node. The GET_ROUND Stake/cross-channel advance
+    /// path suppresses GET_BLOCK when a push for the same unified height was received
+    /// within this window, preventing a double-template burst on Legacy lane.
+    /// 3 000 ms is safely above observed node→miner BLOCK_DATA delivery latency and
+    /// well below the 20 000 ms GET_ROUND poll interval.
+    static constexpr int64_t PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS = 3000;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
