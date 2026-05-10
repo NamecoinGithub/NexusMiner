@@ -518,6 +518,7 @@ private:
     LastSubmittedBlockState get_last_submitted_state_snapshot() const;
     LastSubmittedBlockState consume_last_submitted_state();
     void clear_last_submitted_state();
+    void clear_pending_submit_result_state();
 
     /**
      * @brief Unified height-state updater (single source of truth for both HeightTracker and ClientChannelManager)

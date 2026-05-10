@@ -123,6 +123,12 @@ void Solo::clear_last_submitted_state()
     m_last_submitted_state.clear();
 }
 
+void Solo::clear_pending_submit_result_state()
+{
+    m_submit_result_gate.clear();
+    clear_last_submitted_state();
+}
+
 namespace {
 
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
@@ -822,8 +828,7 @@ void Solo::clear_generation_bound_state(const char* reason)
     m_last_session_status_request_owner.clear();
     m_last_reward_request_owner.clear();
     m_last_get_block_request_owner.clear();
-    clear_last_submitted_state();
-    m_submit_result_gate.clear();
+    clear_pending_submit_result_state();
     m_session_id_mismatch_count = 0;
     m_preflight_reject_count = 0;
     m_unanswered_get_round_count.store(0, std::memory_order_release);
@@ -1805,8 +1810,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                         submit_result.rejection_reason);
         record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED,
                              submit_result.rejection_reason);
-        m_submit_result_gate.clear();
-        clear_last_submitted_state();
+        clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
 
@@ -1822,8 +1826,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
         m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
-        m_submit_result_gate.clear();
-        clear_last_submitted_state();
+        clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
     record_session_event(SessionManager::SessionEventKind::SUBMIT_SENT,
@@ -1867,6 +1870,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
     if (!m_enable_chacha20) {
         m_logger->error("[Solo Submit] ChaCha20 not enabled");
+        clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
 
@@ -1877,6 +1881,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Use the authoritative session key from the session container.
     if (!binding.has_crypto_context()) {
         m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is not ready");
+        clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
 
@@ -1892,6 +1897,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
                             enc_result.error_message);
+            clear_pending_submit_result_state();
             return network::Shared_payload{};
         }
 
@@ -1906,6 +1912,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         if (!result || result->empty()) {
             m_logger->error("[Solo Submit] PacketBuilder::build() returned empty packet");
+            clear_pending_submit_result_state();
             return network::Shared_payload{};
         }
 
@@ -1920,6 +1927,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     catch (const std::exception& e) {
         m_logger->error("[Solo Submit] Exception during encryption: {}", e.what());
+        clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
 }
