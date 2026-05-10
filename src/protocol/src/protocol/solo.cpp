@@ -156,6 +156,26 @@ std::vector<uint8_t> strip_submit_wire_header(const network::Payload& framed,
     return std::vector<uint8_t>(framed.begin() + header_size, framed.end());
 }
 
+/// Returns true when a BLOCK_AVAILABLE push for at least `unified_height` was
+/// received within the last `guard_ms` milliseconds — implying BLOCK_DATA is
+/// still in transit and a GET_BLOCK would be redundant.
+bool push_implies_block_data_in_transit(
+    const HeightTracker::Snapshot& snap,
+    uint32_t unified_height,
+    int64_t guard_ms,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now())
+{
+    if (snap.last_push_notification_at == std::chrono::steady_clock::time_point{}) {
+        return false;
+    }
+    if (snap.push_unified_height < unified_height) {
+        return false;
+    }
+    int64_t age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - snap.last_push_notification_at).count();
+    return age_ms >= 0 && age_ms < guard_ms;
+}
+
 }
 
 // Protocol constants
@@ -3030,8 +3050,12 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             auto canonical = m_height_tracker.GetCanonicalSnapshot();
             bool canonical_already_ahead = canonical.is_initialized() &&
                                            canonical.canonical_unified_height >= unified_height;
+            auto snap = m_height_tracker.GetSnapshot();
+            bool recent_push_for_this_height = push_implies_block_data_in_transit(
+                snap, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
 
-            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler && !canonical_already_ahead) {
+            if (unified_advanced && channel_unchanged && !get_block_sent_in_handler
+                && !canonical_already_ahead && !recent_push_for_this_height) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
                                "({} channel height unchanged — discarding stale template)",
                                m_last_round_unified_height, unified_height,
@@ -3059,6 +3083,14 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                                 "suppressed: canonical already at {} (BLOCK_DATA ahead of GET_ROUND)",
                                 m_last_round_unified_height, unified_height,
                                 canonical.canonical_unified_height);
+            } else if (unified_advanced && channel_unchanged && !get_block_sent_in_handler
+                       && !canonical_already_ahead && recent_push_for_this_height) {
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance "
+                               "unified {} → {} suppressed — PUSH received within {}ms for height {} ≥ {}, "
+                               "BLOCK_DATA in transit",
+                               m_last_round_unified_height, unified_height,
+                               PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS,
+                               snap.push_unified_height, unified_height);
             }
         }
 

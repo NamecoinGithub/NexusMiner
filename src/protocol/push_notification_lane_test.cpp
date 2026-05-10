@@ -84,6 +84,16 @@ bool should_trigger_get_round_fallback_get_block(bool has_valid_template,
     return since_push_s >= protocol::Solo::PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS;
 }
 
+bool push_implies_block_data_in_transit_test(
+    bool has_push, uint32_t push_unified_height,
+    uint32_t check_unified_height, int64_t push_age_ms)
+{
+    if (!has_push) return false;
+    if (push_unified_height < check_unified_height) return false;
+    return push_age_ms >= 0 &&
+           push_age_ms < protocol::Solo::PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS;
+}
+
 std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d00ffff,
                                           uint8_t channel = 2) {
     std::vector<uint8_t> data(216, 0);
@@ -1102,9 +1112,26 @@ int main()
     }
 
     // ====================================================================
-    // Test 23: First PUSH after silence disarms GET_ROUND fallback mode
+    // Test 23: Recent PUSH suppresses GET_ROUND Stake-advance GET_BLOCK
     // ====================================================================
-    std::cout << "\nTest 23: First PUSH after silence disarms GET_ROUND fallback mode" << std::endl;
+    std::cout << "\nTest 23: Recent PUSH suppresses GET_ROUND Stake-advance GET_BLOCK" << std::endl;
+    {
+        print_test_result("Recent push for same height suppresses GET_BLOCK",
+            push_implies_block_data_in_transit_test(true, 200, 200, 2999));
+        print_test_result("Stale push does not suppress GET_BLOCK",
+            !push_implies_block_data_in_transit_test(true, 200, 200, 3000));
+        print_test_result("Push for lower height does not suppress GET_BLOCK",
+            !push_implies_block_data_in_transit_test(true, 199, 200, 100));
+        print_test_result("No push received does not suppress GET_BLOCK",
+            !push_implies_block_data_in_transit_test(false, 200, 200, 100));
+        print_test_result("Boundary age==3000ms is not suppressed",
+            !push_implies_block_data_in_transit_test(true, 201, 200, 3000));
+    }
+
+    // ====================================================================
+    // Test 23b: First PUSH after silence disarms GET_ROUND fallback mode
+    // ====================================================================
+    std::cout << "\nTest 23b: First PUSH after silence disarms GET_ROUND fallback mode" << std::endl;
     {
         bool fallback_mode_armed = false;
         auto on_get_round_parity = [&](int64_t since_push_s, uint32_t node_channel_height, uint32_t template_target_height) {
