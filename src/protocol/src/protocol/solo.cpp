@@ -72,6 +72,23 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
     return true;
 }
 
+void Solo::defer_template_recovery(GetBlockReason reason,
+                                   const char* context,
+                                   const char* detail)
+{
+    m_logger->info("{}: deferring GET_BLOCK recovery through Worker_manager (reason={}{}{})",
+                   context ? context : "[Solo Recovery]",
+                   reason_name(reason),
+                   detail ? ", detail=" : "",
+                   detail ? detail : "");
+    if (m_recovery_handler) {
+        m_recovery_handler();
+    } else {
+        m_logger->warn("{}: no recovery handler registered; health monitor will retry",
+                       context ? context : "[Solo Recovery]");
+    }
+}
+
 uint32_t Solo::get_blocks_accepted() const
 {
     return m_stats_collector ? m_stats_collector->get_global_stats().m_accepted_blocks : 0;
@@ -2186,15 +2203,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             if (m_recovery_handler) {
                 m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                 GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo] Recovery GET_BLOCK")) {
-                    m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                }
+            } else {
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo] Recovery GET_BLOCK",
+                                        "null BLOCK_DATA payload");
             }
             return;
         }
@@ -2235,16 +2247,11 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             if (m_recovery_handler) {
                 m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
+            } else {
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo] Recovery GET_BLOCK",
+                                        "short BLOCK_DATA payload");
             }
-
-            // Immediate retry after notifying recovery handler
-                if (connection) {
-                    if (!request_and_queue_get_block(connection,
-                                                     GetBlockReason::VALIDATION_FAILURE,
-                                                     "[Solo] Recovery GET_BLOCK")) {
-                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                    }
-                }
             return;
         }
         
@@ -2306,12 +2313,10 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 if (validation_result.is_stale) {
                     m_logger->warn("[Solo READ] Template is stale - requesting fresh work");
                 }
-                
-                if (connection) {
-                    request_and_queue_get_block(connection,
-                                                GetBlockReason::VALIDATION_FAILURE,
-                                                "[Solo] Validation recovery GET_BLOCK");
-                }
+
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo] Validation recovery GET_BLOCK",
+                                        validation_result.error_message.c_str());
                 return;
             }
             
@@ -2322,11 +2327,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                                                     "Solo FEED",
                                                     true)) {
                 m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
-                if (connection) {
-                    request_and_queue_get_block(connection,
-                                                GetBlockReason::TEMPLATE_FEED_FAILURE,
-                                                "[Solo] Template feed recovery GET_BLOCK");
-                }
+                defer_template_recovery(GetBlockReason::TEMPLATE_FEED_FAILURE,
+                                        "[Solo] Template feed recovery GET_BLOCK",
+                                        "finalize/feed failed");
                 return;
             }
         }
@@ -2361,11 +2364,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                         m_logger->error("[Solo] CRITICAL: No block handler set - cannot process BLOCK_DATA");
                         m_logger->error("[Solo]   - This indicates an initialization failure");
                         m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
-                        if (connection) {
-                            request_and_queue_get_block(connection,
-                                                        GetBlockReason::VALIDATION_FAILURE,
-                                                        "[Solo] Missing handler recovery GET_BLOCK");
-                        }
+                        defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                                "[Solo] Missing handler recovery GET_BLOCK",
+                                                "missing block handler");
                         return;
                     }
                     
@@ -2380,13 +2381,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                     m_logger->warn("[Solo]   - Received height: {}", block.nHeight);
                     m_logger->warn("[Solo]   - Current height: {}", m_current_height);
                     m_logger->info("[Solo] Recovery: Requesting new work at current height");
-                    if (connection) {
-                        if (!request_and_queue_get_block(connection,
-                                                         GetBlockReason::VALIDATION_FAILURE,
-                                                         "[Solo] Height mismatch recovery GET_BLOCK")) {
-                            m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
-                        }
-                    }
+                    defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                            "[Solo] Height mismatch recovery GET_BLOCK",
+                                            "legacy block height mismatch");
                 }
             }
             catch (const std::exception& e) {
@@ -2394,13 +2391,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 m_logger->error("[Solo]   - Payload size: {} bytes", packet.m_data->size());
                 m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
                 m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
-                if (connection) {
-                    if (!request_and_queue_get_block(connection,
-                                                     GetBlockReason::VALIDATION_FAILURE,
-                                                     "[Solo] Deserialize recovery GET_BLOCK")) {
-                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                    }
-                }
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo] Deserialize recovery GET_BLOCK",
+                                        e.what());
                 return;
             }
         }
@@ -2784,6 +2777,17 @@ void Solo::schedule_recovery_get_block(
 
     const int64_t since_accept_ms = ms_since(m_last_block_accepted_time);
     const int64_t since_push_ms   = ms_since(m_last_push_received_time);
+    auto snap = m_height_tracker.GetSnapshot();
+    if (push_implies_block_data_in_transit(
+            snap, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS, now)) {
+        m_logger->info("[NEW_ROUND] Recovery NOT scheduled: PUSH received {}ms ago "
+                       "for height {} ≥ {}; BLOCK_DATA is expected in transit",
+                       since_push_ms,
+                       snap.push_unified_height,
+                       unified_height);
+        m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
+        return;
+    }
 
     if (!m_recovery_timer) {
         // No io_context supplied (e.g. unit tests without a timer) — fall back
@@ -4251,15 +4255,10 @@ void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::
             if (m_recovery_handler) {
                 m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                  GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo GET_BLOCK] Recovery GET_BLOCK")) {
-                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
-                }
+            } else {
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo GET_BLOCK] Recovery GET_BLOCK",
+                                        "null GET_BLOCK template payload");
             }
             return;
         }
@@ -4274,15 +4273,10 @@ void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::
             if (m_recovery_handler) {
                 m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
                 m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                  GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo GET_BLOCK] Decode recovery GET_BLOCK")) {
-                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
-                }
+            } else {
+                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                        "[Solo GET_BLOCK] Decode recovery GET_BLOCK",
+                                        decoded.error_message.c_str());
             }
             return;
         }
@@ -5423,7 +5417,7 @@ void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t
         // suppressed by the 100ms rapid-burst guard.  Without this reset, a PUSH or
         // prior GET_ROUND poll that fired a GET_BLOCK within the last 100ms will block
         // the replacement request, leaving the miner at NO VALID TEMPLATE for up to 30s
-        // until HEALTH_NO_TEMPLATE fires with bypass_all.  Every other discard site that
+        // until HEALTH_NO_TEMPLATE fires with height-dedup bypass. Every other discard site that
         // is immediately followed by a GET_BLOCK (BLOCK_REJECTED, Stake-advance path,
         // finalize_and_feed_current_template validation gate) already calls this reset.
         reset_get_block_dedup_state();

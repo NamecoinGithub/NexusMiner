@@ -74,12 +74,6 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
         // the node has not yet delivered a PUSH/BLOCK_DATA replacement.  This
         // request must never be suppressed by rapid-burst or height dedup state.
         case GetBlockReason::BLOCK_ACCEPTED:
-        // When there is genuinely no valid template the height-based guard can
-        // never fire (no template → guard passes), but the 100ms rapid-burst
-        // guard can still suppress legitimate retries from the 30s health timer
-        // if a push-triggered GET_BLOCK fired moments before.  Bypass all dedup
-        // so the health timer always makes progress when the miner has no work.
-        case GetBlockReason::HEALTH_NO_TEMPLATE:
             return true;
         default:
             return false;
@@ -108,6 +102,10 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::VALIDATION_FAILURE:
         case GetBlockReason::HEIGHT_DRIFT:
         case GetBlockReason::HEALTH_CHANNEL_STALE:
+        // No-template recovery must bypass height dedup, but it must still
+        // respect rapid-burst/in-flight suppression.  Otherwise health checks
+        // and deferred recovery timers can pile onto an already-pending
+        // GET_BLOCK and amplify node AutoCoolDown empty-response storms.
         case GetBlockReason::HEALTH_NO_TEMPLATE:
         case GetBlockReason::TEMPLATE_FEED_FAILURE:
         case GetBlockReason::SESSION_REAUTH:

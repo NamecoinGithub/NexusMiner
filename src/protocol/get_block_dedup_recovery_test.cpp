@@ -76,8 +76,9 @@ public:
         }
 
         // GET_BLOCK rapid-burst guard (mirrors get_block_dedup_guard.hpp DEDUP_WINDOW_MS).
-        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE) skip
-        // this check entirely; bypass_height reasons still respect it.
+        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED) skip
+        // this check entirely; bypass_height reasons (including HEALTH_NO_TEMPLATE)
+        // still respect it.
         auto now_tp = std::chrono::steady_clock::now();
         if (!should_bypass_all_dedup(reason) &&
             m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
@@ -770,7 +771,7 @@ void test_cross_channel_unified_advance_resets_dedup() {
 // Test: GetBlockReason dedup bypass policy validation
 // ============================================================================
 // Validates the three-tier dedup policy defined in get_block_reason.hpp:
-//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE → skip everything
+//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
 //   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
 //   Note: HEALTH_CHANNEL_ADVANCE is in tier 2 (bypass_height)
@@ -795,11 +796,11 @@ void test_get_block_reason_dedup_policy() {
     print_test_result("BLOCK_ACCEPTED also bypasses height dedup (implied by bypass_all)",
         should_bypass_height_dedup(GetBlockReason::BLOCK_ACCEPTED));
 
-    // HEALTH_NO_TEMPLATE: bypass_all so the health timer always gets through even
-    // when a push-triggered GET_BLOCK fired within the last 100ms.
-    print_test_result("HEALTH_NO_TEMPLATE bypasses all dedup (no template → burst guard counterproductive)",
-        should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
-    print_test_result("HEALTH_NO_TEMPLATE also bypasses height dedup (implied by bypass_all)",
+    // HEALTH_NO_TEMPLATE: bypass height dedup, but keep rapid-burst protection
+    // so health checks cannot pile onto an already-pending template request.
+    print_test_result("HEALTH_NO_TEMPLATE does NOT bypass all dedup (burst guard prevents storms)",
+        !should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("HEALTH_NO_TEMPLATE bypasses height dedup (no valid template)",
         should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
 
     // Tier 2: bypass_height — age-based refresh and forced scenarios

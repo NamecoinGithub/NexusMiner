@@ -25,10 +25,11 @@ namespace protocol {
 //     and a valid template already exists
 //
 // The bypass policy is reason-aware via GetBlockReason:
-//   - bypass_all    (RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE):
+//   - bypass_all    (RECOVERY_FORCED, RECOVERY_TIMER):
 //                   skip both guards — degraded-mode retries always make progress
 //   - bypass_height (PUSH_*, GET_ROUND_*, VALIDATION_FAILURE, SESSION_REAUTH,
-//                   TEMPLATE_AGE_*, BLOCK_REJECTED, HEIGHT_DRIFT, etc.):
+//                   TEMPLATE_AGE_*, BLOCK_REJECTED, HEIGHT_DRIFT,
+//                   HEALTH_NO_TEMPLATE, etc.):
 //                   skip height guard, keep 100ms rapid-burst guard
 //   - full dedup    (INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE, HEALTH_STALE_SUPPRESSED):
 //                   both guards active — normal advance, no urgency

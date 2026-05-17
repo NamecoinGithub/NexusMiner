@@ -656,9 +656,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // template arrives. Calling create_workers() here causes duplicate workers when
                     // both handlers fire for the same staleness event.
                     
-                    // Request fresh work/GET_BLOCK
+                    // Defer fresh work/GET_BLOCK through the centralized recovery retry
+                    // timer. Sending immediately from the packet/validation callback can
+                    // race node AutoCoolDown and amplify empty-template storms.
                     mark_recovery_initiated("template_validation_failed");
-                    retry_template_request(protocol::GetBlockReason::VALIDATION_FAILURE);
+                    schedule_forced_recovery_retry("template_validation_failed");
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
@@ -676,8 +678,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 mark_recovery_initiated("push_staleness");
-                // Workers keep running while we request fresh work/GET_BLOCK.
-                retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
+                // Workers keep running while the centralized retry timer requests
+                // fresh work/GET_BLOCK after a short jittered delay.
+                schedule_forced_recovery_retry("protocol_recovery_handler");
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");

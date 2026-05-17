@@ -948,6 +948,9 @@ private:
     bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
                                      GetBlockReason reason,
                                      const char* context);
+    void defer_template_recovery(GetBlockReason reason,
+                                 const char* context,
+                                 const char* detail = nullptr);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

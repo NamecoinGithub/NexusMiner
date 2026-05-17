@@ -117,7 +117,7 @@ This document describes the implementation of the push notification protocol (LL
 3. Receive CHANNEL_ACK
 4. Send MINER_READY (subscribe)
 5. Receive immediate notification (PRIME/HASH_BLOCK_AVAILABLE)
-6. Request template via GET_BLOCK
+6. Node auto-sends BLOCK_DATA for the advertised tip
 7. Start mining
 ```
 
@@ -134,15 +134,47 @@ On notification (PRIME/HASH_BLOCK_AVAILABLE):
   - Channel staleness check (informational only — doom-loop prevention):
       If channel_height >= channel_target:
         AdvanceChannelTarget(channel_height + 1)  — bookkeeping only
-  - Same-height tip replacement (only when NOT channel-stale):
+  - Same-height tip replacement:
       If hash mismatch at same channel height:
-        Discard template (same-height reorg)
-  - ALWAYS request fresh template via GET_BLOCK
-      Every PUSH = unified tip moved = hashPrevBlock changed
-      GetBlockDedupGuard handles true duplicates (100ms burst + unified height match)
+        Mark replacement-pending while workers continue mining
+  - Do NOT request GET_BLOCK directly for PUSH
+      The node auto-sends BLOCK_DATA after PUSH
+      NEW_ROUND recovery suppresses GET_BLOCK when a recent PUSH for the
+      same-or-higher unified height proves BLOCK_DATA is already in transit
 
 No polling needed for template flow; GET_ROUND is diagnostic/recovery telemetry.
 ```
+
+### PUSH / NEW_ROUND Race Guard
+
+`NEW_ROUND` may arrive immediately before or after `PRIME_BLOCK_AVAILABLE` /
+`HASH_BLOCK_AVAILABLE`.  The miner handles both orderings:
+
+- `NEW_ROUND → PUSH`: the pending 2-second recovery timer is cancelled by the PUSH.
+- `PUSH → NEW_ROUND`: the recovery timer is not scheduled when the PUSH height is
+  same-or-higher and recent enough to imply BLOCK_DATA is in transit.
+
+This prevents `NEW_ROUND` from adding an extra GET_BLOCK on top of the template
+the node is already auto-sending after PUSH.
+
+### Packet Error Recovery Policy
+
+Malformed, empty, or invalid BLOCK_DATA / GET_BLOCK template responses no longer
+trigger an immediate recursive GET_BLOCK from the packet handler.  The protocol
+marks recovery and lets `Worker_manager` schedule a jittered retry through the
+central recovery path.  This avoids hammering node AutoCoolDown with back-to-back
+requests when the node returns empty templates during bursty tip changes.
+
+### Further Patch Strategy
+
+1. Add a single explicit GET_BLOCK scheduler with one-in-flight state, request
+   coalescing, and reason-aware priorities.
+2. Move `HEALTH_NO_TEMPLATE` fully onto that scheduler so health checks cannot
+   emit while a recovery retry or node auto-send is pending.
+3. Add telemetry counters for suppressed NEW_ROUND recovery, deferred packet-error
+   recovery, and health no-template suppression.
+4. Retire stale `get_block_interval_ms` config/docs or wire it into the scheduler
+   as an operator-visible soft floor.
 
 ### Lifeline Rule
 
