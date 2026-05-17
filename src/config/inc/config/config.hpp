@@ -93,8 +93,8 @@ public:
 
 	// GET_BLOCK miner-side interval (milliseconds, default 2000).
 	// NOTE: this value is parsed from config and stored, but is not currently wired
-	// to the runtime cooldown guards (GetBlockDedupGuard::COOLDOWN_WINDOW_MS and
-	// Worker_manager GET_BLOCK_COOLDOWN_MS remain hard-coded at 2000ms).
+	// to the runtime cooldown guards (GetBlockDedupGuard rapid-burst window and
+	// Worker_manager burst guard remain hard-coded).
 	// Operator-configured values are ignored until the wiring is completed.
 	uint32_t get_get_block_interval_ms() const { return m_get_block_interval_ms; }
 
@@ -210,7 +210,7 @@ private:
 	// SIM Link: dual-lane (stateless + legacy) simultaneous connection (default: enabled)
 	bool m_enable_sim_link;
 
-	// GET_BLOCK miner-side cooldown in milliseconds (default: 2000)
+	// GET_BLOCK miner-side rate limit in milliseconds (default: 2500)
 	uint32_t m_get_block_interval_ms;
 
 	// Colin AI diagnostic agent configuration
