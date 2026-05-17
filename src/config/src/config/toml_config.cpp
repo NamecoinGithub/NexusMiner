@@ -252,7 +252,7 @@ namespace config
                     }
                     else if (key == "get_block_interval_ms")
                     {
-                        constexpr int MIN_GET_BLOCK_MS = 100;
+                        constexpr int MIN_GET_BLOCK_MS = 2000;
                         constexpr int MAX_GET_BLOCK_MS = 60000;
                         int ms = parse_int_value(value);
                         if (ms >= MIN_GET_BLOCK_MS && ms <= MAX_GET_BLOCK_MS)

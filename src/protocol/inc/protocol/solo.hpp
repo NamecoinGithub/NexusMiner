@@ -64,7 +64,7 @@ public:
     network::Shared_payload login(Login_handler handler) override;
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
-    /// No miner-side rate limiting — the node's 2-second AutoCoolDown enforces the server-side floor.
+    /// Enforces a 2-second miner-side cooldown aligned with node AutoCoolDown.
     network::Shared_payload get_work() override;
     network::Shared_payload get_work(GetBlockReason reason);
     GetBlockRequestStatus get_last_get_block_request_status() const { return m_last_get_block_request_status.load(); }
@@ -81,8 +81,8 @@ public:
     /// and provides reorg depth estimation for Colin diagnostics.
     const HashCheckpointGuard& get_hash_checkpoint_guard() const { return m_hash_checkpoint_guard; }
 
-    /// Reset the GET_BLOCK deduplication timestamp so the next get_work() call will
-    /// not be suppressed.  Must be called whenever the canonical tip-anchor changes
+    /// Reset GET_BLOCK template-state dedup without bypassing the 2-second cooldown.
+    /// Must be called whenever the canonical tip-anchor changes
     /// (same-height chain reorg) or a new degraded-recovery epoch begins, because the
     /// outstanding dedup state refers to a request for the *old* canonical tip and is
     /// therefore no longer valid as a duplicate guard.
@@ -869,8 +869,8 @@ private:
     std::chrono::steady_clock::time_point m_last_session_status_ack_time{};
 
     // ── GET_BLOCK deduplication ──────────────────────────────────────────────
-    // Centralized dedup guard: reason-aware three-tier policy (bypass_all,
-    // bypass_height, full dedup).  See get_block_dedup_guard.hpp.
+    // Centralized dedup guard: universal 2s cooldown plus reason-aware
+    // template-state policy (state bypass, height bypass, full dedup).
     GetBlockDedupGuard m_dedup_guard;
     std::atomic<GetBlockRequestStatus> m_last_get_block_request_status{GetBlockRequestStatus::NONE};
 
@@ -948,6 +948,9 @@ private:
     bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
                                      GetBlockReason reason,
                                      const char* context);
+    void defer_template_recovery(GetBlockReason reason,
+                                 const char* context,
+                                 const char* detail = nullptr);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION
