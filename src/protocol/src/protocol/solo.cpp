@@ -2197,17 +2197,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
             m_logger->error("[Solo] Recovery: Empty BLOCK_DATA indicates node issue — exiting recovery and retrying");
 
-            // Notify Worker_manager to re-initiate recovery (exit current recovery epoch
-            // and start a new one with backoff). This prevents staying stuck in recovery
-            // mode indefinitely when the node sends empty responses.
-            if (m_recovery_handler) {
-                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            } else {
-                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
-                                        "[Solo] Recovery GET_BLOCK",
-                                        "null BLOCK_DATA payload");
-            }
+            defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                    "[Solo] Recovery GET_BLOCK",
+                                    "null BLOCK_DATA payload");
             return;
         }
         
@@ -2243,15 +2235,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             m_logger->error("[Solo]   - This indicates corrupted or incomplete block data");
             m_logger->error("[Solo] Recovery: Invalid BLOCK_DATA — exiting recovery and retrying");
 
-            // Notify Worker_manager to re-initiate recovery (same as null payload case)
-            if (m_recovery_handler) {
-                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            } else {
-                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
-                                        "[Solo] Recovery GET_BLOCK",
-                                        "short BLOCK_DATA payload");
-            }
+            defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                    "[Solo] Recovery GET_BLOCK",
+                                    "short BLOCK_DATA payload");
             return;
         }
         
@@ -4251,15 +4237,9 @@ void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::
             m_logger->error("[Solo GET_BLOCK] Null packet data — empty {} response", source_name);
             m_logger->error("[Solo GET_BLOCK] Recovery: Exiting recovery and retrying GET_BLOCK");
 
-            // Notify Worker_manager to re-initiate recovery (same pattern as BLOCK_DATA)
-            if (m_recovery_handler) {
-                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            } else {
-                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
-                                        "[Solo GET_BLOCK] Recovery GET_BLOCK",
-                                        "null GET_BLOCK template payload");
-            }
+            defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                    "[Solo GET_BLOCK] Recovery GET_BLOCK",
+                                    "null GET_BLOCK template payload");
             return;
         }
         auto decoded = StatelessBlockUtility::decode_template(
@@ -4269,15 +4249,9 @@ void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::
             m_logger->error("[Solo GET_BLOCK] Template decode failed: {}", decoded.error_message);
             m_logger->error("[Solo GET_BLOCK] Recovery: Invalid template — exiting recovery and retrying");
 
-            // Notify Worker_manager to re-initiate recovery
-            if (m_recovery_handler) {
-                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            } else {
-                defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
-                                        "[Solo GET_BLOCK] Decode recovery GET_BLOCK",
-                                        decoded.error_message.c_str());
-            }
+            defer_template_recovery(GetBlockReason::VALIDATION_FAILURE,
+                                    "[Solo GET_BLOCK] Decode recovery GET_BLOCK",
+                                    decoded.error_message.c_str());
             return;
         }
 

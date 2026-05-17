@@ -117,7 +117,8 @@ This document describes the implementation of the push notification protocol (LL
 3. Receive CHANNEL_ACK
 4. Send MINER_READY (subscribe)
 5. Receive immediate notification (PRIME/HASH_BLOCK_AVAILABLE)
-6. Node auto-sends BLOCK_DATA for the advertised tip
+6. Node auto-sends BLOCK_DATA for the advertised tip after PUSH; the miner only
+   sends GET_BLOCK if recovery later proves the auto-send did not arrive
 7. Start mining
 ```
 
