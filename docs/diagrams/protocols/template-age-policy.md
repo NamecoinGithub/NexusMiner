@@ -73,17 +73,18 @@ hashPrevBlock mismatches emit tiered advisory logs but never discard or reject a
 
 ---
 
-## Diagram 4 — Rate limiter hierarchy (miner side)
+## Diagram 4 — GET_BLOCK cooldown hierarchy
 
-The miner has NO client-side GET_BLOCK rate limiter.
-All rate limiting is enforced by the node's 2-second AutoCoolDown (server-side).
+The miner enforces a local 2-second GET_BLOCK/GET_WORK cooldown aligned with the
+node's 2-second AutoCoolDown.  The miner cooldown is a request-storm guard; the
+node remains authoritative for template availability.
 
 The `m_pending_get_block` state acts as a one-in-flight gate — the miner will not
 send a second GET_BLOCK for the same-or-higher height while one is outstanding —
-but this is not a rate limiter; it is a deduplication guard.  The pending flag
-self-clears on BLOCK_DATA receipt or on timeout.
+but this is separate from the cooldown.  The pending flag self-clears on
+BLOCK_DATA receipt or on timeout.
 
-`HEALTH_NO_TEMPLATE` bypasses height-based dedup but still respects rapid-burst /
+`HEALTH_NO_TEMPLATE` bypasses height-based dedup but still respects cooldown /
 in-flight suppression.  This prevents health checks from piling extra requests
 onto a PUSH-triggered auto-send or a deferred recovery retry.
 

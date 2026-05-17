@@ -1490,7 +1490,7 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
 {
     /// Request a fresh mining template via GET_BLOCK.
     /// Authentication-guarded; returns null if not authenticated or reward not bound.
-    /// Node rate limit: 25 GET_BLOCK per 60 seconds (with 1-second per-request cooldown).
+    /// Miner cooldown: 2 seconds between successful GET_BLOCK/GET_WORK transmissions.
 
     refresh_cached_session_state("Solo GET_BLOCK");
 
@@ -1572,8 +1572,8 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->warn("[Solo] GET_BLOCK suppressed by dedup guard: verdict={}, reason={}, "
                            "unified={}, have_template={}",
-                           verdict == GetBlockDedupGuard::Verdict::SUPPRESS_RAPID_BURST
-                               ? "RAPID_BURST" : "HEIGHT_MATCH",
+                           verdict == GetBlockDedupGuard::Verdict::SUPPRESS_COOLDOWN
+                               ? "COOLDOWN" : "HEIGHT_MATCH",
                            reason_name(reason), canonical_unified, have_valid_template);
             return nullptr;
         }
@@ -1674,7 +1674,7 @@ network::Shared_payload Solo::send_recovery_work_request()
     // Recovery work request — requests a fresh mining template via GET_BLOCK.
     //
     // Sends GET_BLOCK on all lanes (legacy: 0x81; stateless: mirror-mapped 0xD081).
-    // Delegates to get_work() which enforces the miner-side 1s rate limiter and
+    // Delegates to get_work() which enforces the miner-side 2s cooldown and
     // the authentication / reward-binding guards.  Callers must check for a null
     // or empty return value (rate-limited or not yet authenticated).
     //
@@ -2957,12 +2957,10 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         apply_channel_manager_update(unified_height, channel_height);
 
         // NEW_ROUND means the tip changed.  GET_ROUND_* reasons already bypass
-        // the height-based dedup guard via should_bypass_height_dedup(), and the
-        // 100ms rapid-burst guard remains active to prevent a simultaneous PUSH
-        // from racing and sending a duplicate GET_BLOCK.  Do NOT call
-        // reset_get_block_dedup_state() here — that clears the burst guard
-        // timestamp, enabling a PUSH arriving <100ms later to bypass burst
-        // suppression entirely (Bug #2 fix).
+        // the height-based dedup guard via should_bypass_height_dedup(), while
+        // the 2s cooldown remains active to prevent simultaneous PUSH/health
+        // paths from racing and sending duplicate GET_BLOCK requests.  Do NOT
+        // reset template-state here; PUSH/BLOCK_DATA remains authoritative.
 
         // Pass channel height to template interface for staleness validation.
         // update_channel_height() is the primary staleness gate (uses nChannelHeight).
@@ -5386,14 +5384,10 @@ void Solo::handle_fork_detected(mining::ClientChannelManager* pManager, uint32_t
                 : "Fork detected - blockchain rollback");
         m_logger->info("[Solo Fork] ✗ Template invalidated due to {}",
                        nRollback <= 1 ? "Phantom Stake tip refresh" : "fork");
-        // Reset the dedup guard so the immediate replacement GET_BLOCK from the caller
-        // (on_get_round_response → sync_template_state → needs_template path) is never
-        // suppressed by the 100ms rapid-burst guard.  Without this reset, a PUSH or
-        // prior GET_ROUND poll that fired a GET_BLOCK within the last 100ms will block
-        // the replacement request, leaving the miner at NO VALID TEMPLATE for up to 30s
-        // until HEALTH_NO_TEMPLATE fires with height-dedup bypass. Every other discard site that
-        // is immediately followed by a GET_BLOCK (BLOCK_REJECTED, Stake-advance path,
-        // finalize_and_feed_current_template validation gate) already calls this reset.
+        // Reset template-state dedup so the replacement GET_BLOCK from the caller
+        // (on_get_round_response → sync_template_state → needs_template path) is not
+        // blocked by stale height/hash keys. The 2s cooldown timestamp is preserved
+        // so the reset cannot bypass node AutoCoolDown.
         reset_get_block_dedup_state();
     }
     

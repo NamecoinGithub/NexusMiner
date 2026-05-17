@@ -51,7 +51,7 @@ public:
     /// Returns the lane the miner is actively mining on.
     ProtocolLane mining_lane() const { return m_mining_lane; }
 
-    // ── One-shot bypass for GET_BLOCK rate limiter (same-lane recovery) ──────
+    // ── One-shot lane-failure bypass marker (same-lane recovery) ─────────────
     /// Arm a one-shot bypass for the given lane.
     /// The first call to consume_bypass() for that lane after arming returns true
     /// and clears the flag (reset after each use, one bypass per lane-failure event).

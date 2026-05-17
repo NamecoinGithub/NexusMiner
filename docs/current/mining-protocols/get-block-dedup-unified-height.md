@@ -2,11 +2,12 @@
 
 ## Overview
 
-The GET_BLOCK deduplication logic is centralized in `GetBlockDedupGuard` (header-only
-class in `get_block_dedup_guard.hpp`).  The guard suppresses redundant template requests
-using a two-tier system:
+The GET_BLOCK deduplication/cooldown logic is centralized in `GetBlockDedupGuard`
+(header-only class in `get_block_dedup_guard.hpp`).  The guard suppresses redundant
+template requests using two layers:
 
-1. **Rapid-burst guard (100ms)**: Prevents two code paths racing on the same event.
+1. **Miner cooldown (2 seconds)**: Mirrors node AutoCoolDown and applies to every
+   successful GET_BLOCK/GET_WORK transmission, including forced recovery reasons.
 2. **Height-based guard**: Prevents redundant GET_BLOCK when unified height hasn't
    changed and a valid template already exists.
 
@@ -21,23 +22,26 @@ the request.  The dedup policy is derived from the reason rather than hardcoded 
 each call site.
 
 ```
-Tier 1: bypass_all    → RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED
-         Skip all guards; active degraded-mode retries and spent-template
-         replacements must always make progress.
+Layer 0: cooldown      → all reasons
+         Enforce 2 seconds between transmitted GET_BLOCK/GET_WORK requests.
+
+Tier 1: state_bypass   → RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED
+         Skip stale in-flight/height state after cooldown has elapsed.
 
 Tier 2: bypass_height → PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP,
                           TEMPLATE_AGE_*, VALIDATION_FAILURE,
                           BLOCK_REJECTED, GET_ROUND_*, SESSION_REAUTH,
                           HEIGHT_DRIFT, HEALTH_CHANNEL_ADVANCE,
                           HEALTH_NO_TEMPLATE, etc.
-         Skip height guard, keep rapid-burst guard.
+         Skip height guard, keep cooldown.
 
 Tier 3: full dedup    → INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED
-         Both guards active.
+         Cooldown and height guard both active.
 ```
 
 See `src/protocol/inc/protocol/get_block_reason.hpp` for the complete enum and
-`should_bypass_all_dedup()` / `should_bypass_height_dedup()` policy functions.
+policy functions.  `should_bypass_all_dedup()` is a historical name for the
+state-bypass tier; it does not bypass the 2-second cooldown.
 
 ---
 

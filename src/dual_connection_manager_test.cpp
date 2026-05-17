@@ -79,11 +79,10 @@ int main()
     }
 
     {
-        std::cout << "Test 5: No miner-side GET_BLOCK rate limiter\n";
-        // The miner-side GET_BLOCK rate limiter (GET_BLOCK_MIN_INTERVAL in Solo::get_work())
-        // has been removed. The node's 2-second AutoCoolDown (server-side) is the sole
-        // rate limiter for GET_BLOCK. Any miner-side suppression was redundant and caused
-        // doom loops during recovery.
+        std::cout << "Test 5: GET_BLOCK timing lives outside DualConnectionManager\n";
+        // The old DualConnectionManager GET_BLOCK timing constants remain removed.
+        // The current miner-side 2-second cooldown is centralized in Solo's
+        // GetBlockDedupGuard so lane liveness does not own request pacing.
         //
         // The compile-time proof that the DualConnectionManager timing constants are gone
         // is that this file compiles without them — any reference to
@@ -91,7 +90,7 @@ int main()
         DualConnectionManager mgr;
         mgr.set_stateless_alive(true);
         ok &= expect(mgr.is_stateless_alive(),
-                     "DualConnectionManager liveness works without stale GET_BLOCK timing constants");
+                     "DualConnectionManager liveness works without GET_BLOCK timing constants");
         std::cout << '\n';
     }
 

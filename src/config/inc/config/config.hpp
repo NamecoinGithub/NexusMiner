@@ -91,7 +91,7 @@ public:
 		return (m_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
 	}
 
-	// GET_BLOCK miner-side rate limit (milliseconds, default 2000)
+	// GET_BLOCK miner-side cooldown (milliseconds, default 2000)
 	uint32_t get_get_block_interval_ms() const { return m_get_block_interval_ms; }
 
 	// Colin AI diagnostic agent
@@ -206,7 +206,7 @@ private:
 	// SIM Link: dual-lane (stateless + legacy) simultaneous connection (default: enabled)
 	bool m_enable_sim_link;
 
-	// GET_BLOCK miner-side rate limit in milliseconds (default: 2500)
+	// GET_BLOCK miner-side cooldown in milliseconds (default: 2000)
 	uint32_t m_get_block_interval_ms;
 
 	// Colin AI diagnostic agent configuration

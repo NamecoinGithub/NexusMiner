@@ -54,8 +54,9 @@ movement changes `hashPrevBlock`, so the mining template **must** be refreshed.
 Channel heights are tracked informationally (doom-loop prevention, diagnostics)
 but do **not** drive the template refresh decision.
 
-Same-height dedup is unified-height-only via `GetBlockDedupGuard`.  The 100ms
-rapid-burst guard prevents two identical pushes from racing.
+Same-height dedup is unified-height-only via `GetBlockDedupGuard`.  Its universal
+2-second miner cooldown prevents PUSH, GET_ROUND, and health/recovery paths from
+racing into duplicate GET_BLOCK requests.
 
 ## Payload Format
 

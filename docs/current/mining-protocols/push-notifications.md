@@ -166,6 +166,9 @@ marks recovery and lets `Worker_manager` schedule a jittered retry through the
 central recovery path.  This avoids hammering node AutoCoolDown with back-to-back
 requests when the node returns empty templates during bursty tip changes.
 
+See `docs/diagrams/protocols/push-get-block-health-cooldown.md` for the combined
+PUSH, GET_BLOCK, NEW_ROUND, and Health Monitor flow.
+
 ### Further Patch Strategy
 
 1. Add a single explicit GET_BLOCK scheduler with one-in-flight state, request
@@ -174,8 +177,8 @@ requests when the node returns empty templates during bursty tip changes.
    emit while a recovery retry or node auto-send is pending.
 3. Add telemetry counters for suppressed NEW_ROUND recovery, deferred packet-error
    recovery, and health no-template suppression.
-4. Retire stale `get_block_interval_ms` config/docs or wire it into the scheduler
-   as an operator-visible soft floor.
+4. Wire `get_block_interval_ms` into the future scheduler/guard if operator
+   tuning is needed; keep the default aligned with the 2-second AutoCoolDown.
 
 ### Lifeline Rule
 
@@ -271,22 +274,24 @@ On cross-channel PUSH (Hash/Stake block for Prime miner):
 > `STAKE_BLOCK_AVAILABLE` opcode; Stake block tip advances are delivered via the
 > subscribed miner's own channel opcode.
 
-### GetBlockDedupGuard Three-Tier Policy
+### GetBlockDedupGuard Cooldown + State Policy
 
 PUSH-triggered template refreshes use `GetBlockReason` (e.g., `PUSH_TIP_MOVED`)
-which **bypasses** the height-based dedup guard but still respects the 100ms
-rapid-burst guard to prevent two identical pushes from racing.
+which **bypasses** the height-based dedup guard but still respects the universal
+2-second miner cooldown.
 
 > **Note**: `PUSH_STALE`, `PUSH_NO_TEMPLATE`, and `PUSH_CROSS_CHANNEL` have been
 > removed — the NODE now auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK
 > request is needed for PUSH notifications.
 
-Recovery retries (`RECOVERY_FORCED`, `RECOVERY_TIMER`) bypass **all** guards.
+Recovery retries (`RECOVERY_FORCED`, `RECOVERY_TIMER`) bypass stale
+in-flight/height state only after the 2-second cooldown has elapsed.
 
 ```
-Tier 1: bypass_all   → RECOVERY_FORCED, RECOVERY_TIMER (skip all guards)
-Tier 2: bypass_height → PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP, TEMPLATE_AGE_*, GET_ROUND_*, etc. (skip height, keep burst)
-Tier 3: full dedup   → INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE (both guards active)
+Layer 0: cooldown      → all reasons (2 seconds)
+Tier 1: state_bypass   → RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED
+Tier 2: bypass_height  → PUSH_TIP_MOVED, PUSH_SAME_HEIGHT_TIP, TEMPLATE_AGE_*, GET_ROUND_*, etc.
+Tier 3: full dedup     → INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED
 ```
 
 > **Note**: The old two-reason model (`channel_advanced` vs `tip_moved`) has been
