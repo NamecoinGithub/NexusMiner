@@ -3,15 +3,15 @@
  * @brief Unit tests for GET_BLOCK deduplication and empty BLOCK_DATA recovery
  *
  * Tests:
- *  1. GET_BLOCK cooldown suppression within 2-second window
- *  2. GET_BLOCK allowed after cooldown window expires
- *  3. Multiple rapid GET_BLOCK requests cooldown-suppressed
+ *  1. GET_BLOCK deduplication within 100ms window
+ *  2. GET_BLOCK allowed after deduplication window expires
+ *  3. Multiple rapid GET_BLOCK requests deduplicated
  *  4. GET_BLOCK deduplication across push handler and Worker_manager
  *  5. Deduplication state can be reset
  *  6. Three successive GET_BLOCK calls with proper timing
  *  7. Verify packet format for GET_BLOCK
  *  8. Degraded forced retry sends within bounded interval
- *  9. Cooldown still allows periodic forced retry in degraded mode
+ *  9. Dedup still allows periodic forced retry in degraded mode
  * 10. request_work empty schedules delayed retry (no starvation)
  * 11. ⚡ Unified Tip-Anchor Changed — dedup reset allows fresh GET_BLOCK despite recent prior request
  * 12. New recovery epoch does not inherit stale GET_BLOCK suppression state; anti-flood preserved within epoch
@@ -20,13 +20,11 @@
  * 15. Cross-channel (Hash/Stake) block advancing unified but not channel height → dedup reset
  *     unblocks age-based GET_BLOCK retry
  * 16. Unified-only dedup allows cross-channel refresh
- * 17. GetBlockReason state-dedup bypass policy validation
- * 18. Universal 2-second cooldown applies to forced/no-template requests
+ * 17. GetBlockReason dedup bypass policy validation (three-tier: bypass_all, bypass_height, full)
  */
 
 #include "protocol/packet_builder.hpp"
 #include "protocol/get_block_reason.hpp"
-#include "protocol/get_block_dedup_guard.hpp"
 #include "miner_opcodes.hpp"
 #include <iostream>
 #include <cassert>
@@ -77,15 +75,16 @@ public:
             return nullptr;
         }
 
-        // GET_BLOCK cooldown guard (mirrors get_block_dedup_guard.hpp COOLDOWN_WINDOW_MS).
-        // This applies before reason-specific state-dedup bypasses so forced
-        // recovery and HEALTH_NO_TEMPLATE cannot storm node AutoCoolDown.
+        // GET_BLOCK rapid-burst guard (mirrors get_block_dedup_guard.hpp DEDUP_WINDOW_MS).
+        // bypass_all reasons (RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE) skip
+        // this check entirely; bypass_height reasons still respect it.
         auto now_tp = std::chrono::steady_clock::now();
-        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
+        if (!should_bypass_all_dedup(reason) &&
+            m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now_tp - m_last_get_block_transmitted_tp).count();
-            if (elapsed_ms < GetBlockDedupGuard::COOLDOWN_WINDOW_MS) {
-                std::cout << "    [Cooldown] Suppressing GET_BLOCK ("
+            if (elapsed_ms < 100) {  // GET_BLOCK_DEDUP_MS = 100
+                std::cout << "    [Dedup] Suppressing duplicate GET_BLOCK ("
                          << elapsed_ms << "ms since last)\n";
                 return nullptr;  // Suppress duplicate
             }
@@ -111,14 +110,8 @@ public:
         return payload;
     }
 
-    void reset_template_state() {
-        // Template-state reset intentionally preserves cooldown timestamp.
-    }
-
-    void rewind_timestamp(std::chrono::milliseconds delta) {
-        if (m_last_get_block_transmitted_tp != std::chrono::steady_clock::time_point{}) {
-            m_last_get_block_transmitted_tp -= delta;
-        }
+    void reset_timestamp() {
+        m_last_get_block_transmitted_tp = {};
     }
 
     int get_call_count() const { return m_get_block_call_count; }
@@ -184,15 +177,15 @@ public:
 private:
     void schedule_retry(std::chrono::steady_clock::time_point now) {
         ++scheduled_retry_count;
-        next_due = now + std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 125);
+        next_due = now + std::chrono::milliseconds(1000 + 125);
     }
 };
 
 // ============================================================================
-// Test 1: GET_BLOCK cooldown suppression within 2-second window
+// Test 1: GET_BLOCK deduplication within 100ms window
 // ============================================================================
 void test_get_block_dedup_within_window() {
-    std::cout << "\nTest 1: GET_BLOCK cooldown suppression within 2-second window\n";
+    std::cout << "\nTest 1: GET_BLOCK deduplication within 100ms window\n";
 
     GetBlockDeduplicator dedup;
 
@@ -200,11 +193,11 @@ void test_get_block_dedup_within_window() {
     auto payload1 = dedup.get_work();
     bool first_success = (payload1 != nullptr && !payload1->empty());
 
-    // Second call within cooldown should be suppressed
+    // Second call within 100ms should be suppressed
     auto payload2 = dedup.get_work();
     bool second_suppressed = (payload2 == nullptr);
 
-    // Third call within cooldown should also be suppressed
+    // Third call within 100ms should also be suppressed
     auto payload3 = dedup.get_work();
     bool third_suppressed = (payload3 == nullptr);
 
@@ -212,14 +205,14 @@ void test_get_block_dedup_within_window() {
     bool correct_call_count = (call_count == 3);  // All 3 calls should be counted
 
     bool passed = first_success && second_suppressed && third_suppressed && correct_call_count;
-    print_test_result("GET_BLOCK cooldown suppression within 2s", passed);
+    print_test_result("GET_BLOCK deduplication within 100ms", passed);
 }
 
 // ============================================================================
-// Test 2: GET_BLOCK allowed after cooldown window expires
+// Test 2: GET_BLOCK allowed after deduplication window expires
 // ============================================================================
 void test_get_block_after_window() {
-    std::cout << "\nTest 2: GET_BLOCK allowed after cooldown window expires\n";
+    std::cout << "\nTest 2: GET_BLOCK allowed after deduplication window expires\n";
 
     GetBlockDeduplicator dedup;
 
@@ -227,16 +220,16 @@ void test_get_block_after_window() {
     auto payload1 = dedup.get_work();
     bool first_success = (payload1 != nullptr && !payload1->empty());
 
-    // Simulate the 2-second cooldown expiring without making the unit test slow.
-    std::cout << "    [Time] Advancing past 2s cooldown window...\n";
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
+    // Wait for deduplication window to expire (110ms > 100ms)
+    std::cout << "    [Wait] Sleeping for 110ms to expire dedup window...\n";
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
 
     // Second call after window should succeed
     auto payload2 = dedup.get_work();
     bool second_success = (payload2 != nullptr && !payload2->empty());
 
     bool passed = first_success && second_success;
-    print_test_result("GET_BLOCK allowed after cooldown expires", passed);
+    print_test_result("GET_BLOCK allowed after dedup window expires", passed);
 }
 
 // ============================================================================
@@ -256,7 +249,7 @@ void test_multiple_rapid_requests() {
         successful_transmissions++;
     }
 
-    // Rapid-fire 9 more requests within cooldown
+    // Rapid-fire 9 more requests within 100ms
     for (int i = 0; i < 9; i++) {
         payload = dedup.get_work();
         if (payload && !payload->empty()) {
@@ -334,7 +327,7 @@ void test_dedup_across_callers() {
     auto payload1 = dedup.get_work();
     bool push_success = (payload1 != nullptr && !payload1->empty());
 
-    // Simulate Worker_manager call immediately after (within cooldown)
+    // Simulate Worker_manager call immediately after (within 100ms)
     std::cout << "    [Worker Manager] Requesting GET_BLOCK...\n";
     auto payload2 = dedup.get_work();
     bool worker_suppressed = (payload2 == nullptr);
@@ -359,19 +352,15 @@ void test_dedup_reset() {
     auto payload2 = dedup.get_work();
     bool second_suppressed = (payload2 == nullptr);
 
-    // Reset template state (simulating recovery completion).  Cooldown remains active.
-    dedup.reset_template_state();
+    // Reset timestamp (simulating recovery completion)
+    dedup.reset_timestamp();
 
-    // Third call after reset is still suppressed until cooldown expires.
+    // Third call after reset should succeed
     auto payload3 = dedup.get_work();
-    bool third_suppressed = (payload3 == nullptr);
+    bool third_success = (payload3 != nullptr && !payload3->empty());
 
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
-    auto payload4 = dedup.get_work();
-    bool fourth_success = (payload4 != nullptr && !payload4->empty());
-
-    bool passed = first_success && second_suppressed && third_suppressed && fourth_success;
-    print_test_result("Template-state reset preserves 2s cooldown", passed);
+    bool passed = first_success && second_suppressed && third_success;
+    print_test_result("Deduplication state resets correctly", passed);
 }
 
 // ============================================================================
@@ -387,16 +376,16 @@ void test_three_successive_calls() {
     bool first_success = (payload1 != nullptr && !payload1->empty());
     auto first_tp = dedup.get_last_transmitted_tp();
 
-    // Advance beyond cooldown
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
+    // Wait 110ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
 
     // Second call
     auto payload2 = dedup.get_work();
     bool second_success = (payload2 != nullptr && !payload2->empty());
     auto second_tp = dedup.get_last_transmitted_tp();
 
-    // Advance beyond cooldown
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
+    // Wait 110ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
 
     // Third call
     auto payload3 = dedup.get_work();
@@ -460,8 +449,7 @@ void test_degraded_forced_retry_sends_within_interval() {
     bool second_sent_too_early = controller.tick(now + std::chrono::milliseconds(50));
     print_test_result("Second retry before interval is suppressed", !second_sent_too_early);
 
-    controller.dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
-    bool third_sent = controller.tick(now + std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 200));
+    bool third_sent = controller.tick(now + std::chrono::milliseconds(1200));
     print_test_result("Forced retry sends again after interval", third_sent);
 }
 
@@ -469,14 +457,13 @@ void test_degraded_forced_retry_sends_within_interval() {
 // Test 9: Dedup window cannot starve degraded forced retry lane
 // ============================================================================
 void test_dedup_still_allows_periodic_forced_retry() {
-    std::cout << "\nTest 9: Cooldown still allows periodic forced retry in degraded mode\n";
+    std::cout << "\nTest 9: Dedup still allows periodic forced retry in degraded mode\n";
     DegradedForcedRetryController controller;
     auto now = std::chrono::steady_clock::now();
 
     bool first_sent = controller.tick(now);
     bool immediate_retry = controller.tick(now + std::chrono::milliseconds(10));  // interval gate
-    controller.dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
-    bool second_sent = controller.tick(now + std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 200));
+    bool second_sent = controller.tick(now + std::chrono::milliseconds(1200));
 
     print_test_result("First forced send succeeds", first_sent);
     print_test_result("Immediate retry is suppressed by local interval", !immediate_retry);
@@ -496,7 +483,7 @@ void test_request_work_empty_delayed_retry_path() {
     print_test_result("Initial empty work does not send", !first_sent);
     print_test_result("Empty work schedules retry token", controller.scheduled_retry_count == 1);
 
-    bool retry_sent = controller.tick(now + std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 200));
+    bool retry_sent = controller.tick(now + std::chrono::milliseconds(1200));
     print_test_result("Delayed retry sends GET_BLOCK", retry_sent);
     print_test_result("No starvation after empty work transient", controller.sent_count >= 1);
 }
@@ -518,25 +505,21 @@ void test_tip_anchor_change_resets_dedup_allows_fresh_get_block() {
     bool first_success = (payload1 != nullptr && !payload1->empty());
     print_test_result("Initial GET_BLOCK for first tip-anchor succeeds", first_success);
 
-    // Immediate second request within cooldown is suppressed (same epoch, no tip change)
+    // Immediate second request within 100ms is suppressed (same epoch, no tip change)
     auto payload_dup = dedup.get_work();
     bool dup_suppressed = (payload_dup == nullptr);
     print_test_result("Immediate duplicate within same epoch is suppressed", dup_suppressed);
 
     // ⚡ Unified Tip-Anchor Changed — simulate recovery epoch reset:
-    // reset_get_block_dedup_state() clears stale template-state keys but preserves
-    // the miner-side cooldown timestamp.
-    dedup.reset_template_state();  // mirrors Solo::reset_get_block_dedup_state()
+    // reset_get_block_dedup_state() clears the dedup timestamp so the new canonical
+    // tip-anchor's GET_BLOCK is not blocked by the old request's timestamp.
+    dedup.reset_timestamp();  // mirrors Solo::reset_get_block_dedup_state()
 
-    // Request for new canonical tip-anchor is still cooldown-suppressed.
+    // Request for new canonical tip-anchor must succeed immediately despite
+    // being within 100ms of the previous request.
     auto payload_recovery = dedup.get_work();
-    bool recovery_suppressed = (payload_recovery == nullptr);
-    print_test_result("GET_BLOCK after tip-anchor change still respects cooldown", recovery_suppressed);
-
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
-    auto payload_after_cooldown = dedup.get_work();
-    bool recovery_allowed = (payload_after_cooldown != nullptr && !payload_after_cooldown->empty());
-    print_test_result("GET_BLOCK after tip-anchor change succeeds after cooldown", recovery_allowed);
+    bool recovery_allowed = (payload_recovery != nullptr && !payload_recovery->empty());
+    print_test_result("GET_BLOCK after tip-anchor change succeeds (not suppressed)", recovery_allowed);
 }
 
 // ============================================================================
@@ -563,8 +546,7 @@ void test_new_recovery_epoch_does_not_inherit_stale_dedup() {
     print_test_result("Epoch 1 second rapid request suppressed (anti-flood)", epoch1_second_suppressed);
 
     // ⚡ Recovery epoch transition (Unified Tip-Anchor Changed or degraded recovery begin)
-    dedup.reset_template_state();  // mirrors Solo::reset_get_block_dedup_state()
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
+    dedup.reset_timestamp();  // mirrors Solo::reset_get_block_dedup_state()
 
     // Epoch 2: first request after reset succeeds (new canonical state)
     auto p3 = dedup.get_work();
@@ -607,11 +589,11 @@ void test_anti_flood_preserved_within_same_epoch() {
     print_test_result("First request in epoch succeeds", first_ok);
     print_test_result("5 rapid true duplicates are all suppressed", flood_blocked);
 
-    // After cooldown, one more request should succeed.
-    dedup.rewind_timestamp(std::chrono::milliseconds(GetBlockDedupGuard::COOLDOWN_WINDOW_MS + 10));
+    // After dedup window, one more request should succeed
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
     auto p_after = dedup.get_work();
     bool after_window_ok = (p_after != nullptr && !p_after->empty());
-    print_test_result("After cooldown, next request succeeds again", after_window_ok);
+    print_test_result("After dedup window, next request succeeds again", after_window_ok);
 }
 
 // ============================================================================
@@ -624,14 +606,14 @@ void test_anti_flood_preserved_within_same_epoch() {
 // ============================================================================
 
 // Minimal mock of the height-based dedup condition added in solo.cpp,
-// isolated from the time-based cooldown guard.
+// isolated from the time-based rapid-burst guard.
 struct HeightDeduplicator {
     bool has_valid_template{false};
     uint32_t last_unified{0};
     uint32_t cur_unified{100};
 
-    // Simulates reset_get_block_dedup_state() for template-state keys.
-    // The standalone height-only mock has no cooldown timestamp.
+    // Simulates reset_get_block_dedup_state() — clears all dedup tracking so
+    // the next would_send() call is never suppressed regardless of heights.
     void reset() {
         last_unified = 0;
     }
@@ -788,7 +770,7 @@ void test_cross_channel_unified_advance_resets_dedup() {
 // Test: GetBlockReason dedup bypass policy validation
 // ============================================================================
 // Validates the three-tier dedup policy defined in get_block_reason.hpp:
-//   1. bypass_state:  RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED → skip in-flight/height state
+//   1. bypass_all:    RECOVERY_FORCED, RECOVERY_TIMER, BLOCK_ACCEPTED, HEALTH_NO_TEMPLATE → skip everything
 //   2. bypass_height: TEMPLATE_AGE_WARNING, VALIDATION_FAILURE, BLOCK_REJECTED, etc. → skip height guard
 //   3. full dedup:    INITIAL_REQUEST, HEALTH_STALE_SUPPRESSED, etc. → all guards active
 //   Note: HEALTH_CHANNEL_ADVANCE is in tier 2 (bypass_height)
@@ -801,31 +783,30 @@ void test_cross_channel_unified_advance_resets_dedup() {
 void test_get_block_reason_dedup_policy() {
     std::cout << "\nTest 17: GetBlockReason dedup bypass policy" << std::endl;
 
-    // Tier 1: state bypass — recovery retries skip in-flight/height state,
-    // but the universal 2s cooldown is tested separately below.
-    print_test_result("RECOVERY_FORCED bypasses state dedup",
+    // Tier 1: bypass_all — recovery retries skip everything
+    print_test_result("RECOVERY_FORCED bypasses all dedup",
         should_bypass_all_dedup(GetBlockReason::RECOVERY_FORCED));
-    print_test_result("RECOVERY_TIMER bypasses state dedup",
+    print_test_result("RECOVERY_TIMER bypasses all dedup",
         should_bypass_all_dedup(GetBlockReason::RECOVERY_TIMER));
     print_test_result("RECOVERY_FORCED also bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::RECOVERY_FORCED));
-    print_test_result("BLOCK_ACCEPTED bypasses state dedup (spent template replacement)",
+    print_test_result("BLOCK_ACCEPTED bypasses all dedup (spent template replacement)",
         should_bypass_all_dedup(GetBlockReason::BLOCK_ACCEPTED));
-    print_test_result("BLOCK_ACCEPTED also bypasses height dedup (implied by state bypass)",
+    print_test_result("BLOCK_ACCEPTED also bypasses height dedup (implied by bypass_all)",
         should_bypass_height_dedup(GetBlockReason::BLOCK_ACCEPTED));
 
-    // HEALTH_NO_TEMPLATE: bypass height dedup, but keep cooldown protection.
-    // so health checks cannot pile onto an already-pending template request.
-    print_test_result("HEALTH_NO_TEMPLATE does NOT bypass state dedup (cooldown prevents storms)",
-        !should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
-    print_test_result("HEALTH_NO_TEMPLATE bypasses height dedup (no valid template)",
+    // HEALTH_NO_TEMPLATE: bypass_all so the health timer always gets through even
+    // when a push-triggered GET_BLOCK fired within the last 100ms.
+    print_test_result("HEALTH_NO_TEMPLATE bypasses all dedup (no template → burst guard counterproductive)",
+        should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("HEALTH_NO_TEMPLATE also bypasses height dedup (implied by bypass_all)",
         should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
 
     // Tier 2: bypass_height — age-based refresh and forced scenarios
     // THE KEY BUG FIX: TEMPLATE_AGE_WARNING bypasses height dedup
     print_test_result("TEMPLATE_AGE_WARNING bypasses height dedup (key bug fix)",
         should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_WARNING));
-    print_test_result("TEMPLATE_AGE_WARNING does NOT bypass state dedup (cooldown still active)",
+    print_test_result("TEMPLATE_AGE_WARNING does NOT bypass all dedup (rapid-burst still active)",
         !should_bypass_all_dedup(GetBlockReason::TEMPLATE_AGE_WARNING));
     print_test_result("TEMPLATE_AGE_EMERGENCY bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::TEMPLATE_AGE_EMERGENCY));
@@ -853,11 +834,11 @@ void test_get_block_reason_dedup_policy() {
     // burst guard does not fire on the first post-rejection request.
     print_test_result("BLOCK_REJECTED bypasses height dedup",
         should_bypass_height_dedup(GetBlockReason::BLOCK_REJECTED));
-    print_test_result("BLOCK_REJECTED does NOT bypass state dedup (cooldown still active on retry)",
+    print_test_result("BLOCK_REJECTED does NOT bypass all dedup (burst guard still active on retry)",
         !should_bypass_all_dedup(GetBlockReason::BLOCK_REJECTED));
 
-    // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT state dedup
-    // (2s cooldown still applies).
+    // PUSH reasons: bypass height dedup (PUSH is authoritative) but NOT all dedup
+    // (100ms rapid-burst guard still applies).
     // NOTE: PUSH_STALE, PUSH_NO_TEMPLATE, PUSH_CROSS_CHANNEL removed —
     //       NODE auto-sends BLOCK_DATA after PUSH, so no GET_BLOCK needed.
     print_test_result("PUSH_TIP_MOVED bypasses height dedup (authoritative push)",
@@ -874,17 +855,17 @@ void test_get_block_reason_dedup_policy() {
     // NOTE: HEALTH_TIP_MOVED removed — GET_ROUND is the backup for tip changes.
     print_test_result("HEALTH_CHANNEL_ADVANCE bypasses height dedup (template stale at same unified height)",
         should_bypass_height_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
-    print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass state dedup (cooldown still active)",
+    print_test_result("HEALTH_CHANNEL_ADVANCE does NOT bypass all dedup (burst guard still active)",
         !should_bypass_all_dedup(GetBlockReason::HEALTH_CHANNEL_ADVANCE));
     print_test_result("HEALTH_STALE_SUPPRESSED does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::HEALTH_STALE_SUPPRESSED));
     print_test_result("INITIAL_REQUEST does NOT bypass height dedup",
         !should_bypass_height_dedup(GetBlockReason::INITIAL_REQUEST));
 
-    // PUSH bypasses height but NOT state dedup (cooldown still applies)
-    print_test_result("PUSH_TIP_MOVED does NOT bypass state dedup",
+    // PUSH bypasses height but NOT all dedup (burst guard still applies)
+    print_test_result("PUSH_TIP_MOVED does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::PUSH_TIP_MOVED));
-    print_test_result("INITIAL_REQUEST does NOT bypass state dedup",
+    print_test_result("INITIAL_REQUEST does NOT bypass all dedup",
         !should_bypass_all_dedup(GetBlockReason::INITIAL_REQUEST));
 
     // reason_name() coverage — must not return "unknown" for any defined reason
@@ -900,32 +881,6 @@ void test_get_block_reason_dedup_policy() {
         std::string(reason_name(GetBlockReason::BLOCK_ACCEPTED)) == "block_accepted");
     print_test_result("reason_name(PUSH_TIP_MOVED) returns expected name",
         std::string(reason_name(GetBlockReason::PUSH_TIP_MOVED)) == "push_tip_moved");
-}
-
-// ============================================================================
-// Test: Universal miner-side cooldown applies before reason bypass policy
-// ============================================================================
-void test_universal_cooldown_applies_to_forced_reasons() {
-    std::cout << "\nTest 18: Universal 2s cooldown applies to forced/no-template reasons" << std::endl;
-
-    GetBlockDedupGuard guard;
-    uint1024_t hash_prev{};
-
-    auto first = guard.check(GetBlockReason::INITIAL_REQUEST, 100, false, hash_prev);
-    guard.record_transmission(100, hash_prev);
-    auto forced = guard.check(GetBlockReason::RECOVERY_FORCED, 100, false, hash_prev);
-    auto health_no_template = guard.check(GetBlockReason::HEALTH_NO_TEMPLATE, 100, false, hash_prev);
-    guard.reset();
-    auto block_accepted_after_reset = guard.check(GetBlockReason::BLOCK_ACCEPTED, 101, false, hash_prev);
-
-    print_test_result("Initial GET_BLOCK is allowed",
-        first == GetBlockDedupGuard::Verdict::ALLOW);
-    print_test_result("RECOVERY_FORCED is cooldown-suppressed",
-        forced == GetBlockDedupGuard::Verdict::SUPPRESS_COOLDOWN);
-    print_test_result("HEALTH_NO_TEMPLATE is cooldown-suppressed",
-        health_no_template == GetBlockDedupGuard::Verdict::SUPPRESS_COOLDOWN);
-    print_test_result("Template-state reset does not bypass cooldown",
-        block_accepted_after_reset == GetBlockDedupGuard::Verdict::SUPPRESS_COOLDOWN);
 }
 
 // ============================================================================
@@ -955,7 +910,6 @@ int main() {
     test_cross_channel_unified_advance_resets_dedup();
     test_unified_only_dedup_allows_cross_channel_refresh();
     test_get_block_reason_dedup_policy();
-    test_universal_cooldown_applies_to_forced_reasons();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

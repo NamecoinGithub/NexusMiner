@@ -93,8 +93,8 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-    constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 2000;
-    constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 2250;
+    constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 100;
+    constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 250;
 
 }
 
@@ -656,11 +656,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // template arrives. Calling create_workers() here causes duplicate workers when
                     // both handlers fire for the same staleness event.
                     
-                    // Defer fresh work/GET_BLOCK through the centralized recovery retry
-                    // timer. Sending immediately from the packet/validation callback can
-                    // race node AutoCoolDown and amplify empty-template storms.
+                    // Request fresh work/GET_BLOCK
                     mark_recovery_initiated("template_validation_failed");
-                    schedule_forced_recovery_retry("template_validation_failed");
+                    retry_template_request(protocol::GetBlockReason::VALIDATION_FAILURE);
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
@@ -678,9 +676,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         m_primary_node_session->set_recovery_initiated_handler(
             [this]() {
                 mark_recovery_initiated("push_staleness");
-                // Workers keep running while the centralized retry timer requests
-                // fresh work/GET_BLOCK after a short jittered delay.
-                schedule_forced_recovery_retry("protocol_recovery_handler");
+                // Workers keep running while we request fresh work/GET_BLOCK.
+                retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -2445,17 +2442,18 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 {
     auto now = std::chrono::steady_clock::now();
 
-    // Miner-side GET_BLOCK/GET_WORK cooldown: keep Worker_manager from even
-    // asking Solo to build a fresh request while node AutoCoolDown is still
-    // expected to reject/empty it. Solo enforces the same 2s floor for direct
-    // protocol call sites.
-    constexpr int64_t GET_BLOCK_COOLDOWN_MS = 2000;
-    if (m_last_get_block_request_time != std::chrono::steady_clock::time_point{}) {
+    // Bug 5 fix: Prevent burst duplicate GET_BLOCK requests when both the forced
+    // retry timer (100-250ms jitter) and health monitor (5s cycle) fire within
+    // the same short window.  Suppress if the last request was sent < 500ms ago,
+    // unless the reason bypasses all dedup (recovery-critical).
+    constexpr int64_t GET_BLOCK_BURST_GUARD_MS = 500;
+    if (!should_bypass_all_dedup(reason) &&
+        m_last_get_block_request_time != std::chrono::steady_clock::time_point{}) {
         auto since_last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_get_block_request_time).count();
-        if (since_last_ms < GET_BLOCK_COOLDOWN_MS) {
-            m_logger->debug("[Worker_manager] GET_BLOCK cooldown-suppressed: {}ms since last request "
-                           "(cooldown={}ms, reason={})", since_last_ms, GET_BLOCK_COOLDOWN_MS, reason_name(reason));
+        if (since_last_ms < GET_BLOCK_BURST_GUARD_MS) {
+            m_logger->debug("[Worker_manager] GET_BLOCK burst-suppressed: {}ms since last request "
+                           "(guard={}ms, reason={})", since_last_ms, GET_BLOCK_BURST_GUARD_MS, reason_name(reason));
             return;
         }
     }
@@ -2483,8 +2481,8 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     // If validate_current_template() has discarded the last several templates due to
     // hashPrevBlock mismatch (consecutive > 0), a rapid-fire GET_BLOCK ↔ discard loop
     // is forming.  Apply an exponential delay before the next request so we don't
-    // hammer a node that is already under load.  Forced recovery calls
-    // coming from the health-monitor still respect the 2s cooldown; the health-monitor's
+    // hammer a node that is already under load.  Forced recovery calls (should_bypass_all_dedup)
+    // coming from the health-monitor still respect the backoff; the health-monitor's
     // own tick period (~5 s) already provides a natural floor delay.
     {
         uint32_t consecutive = solo_protocol->get_hashprev_mismatch_consecutive();
@@ -2613,7 +2611,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         }
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context={}", status_str);
         // request_work() returned empty despite passing all guards above.
-        // Most likely cause: 2s GET_BLOCK cooldown in Solo::get_work() or
+        // Most likely cause: 100ms GET_BLOCK dedup guard in Solo::get_work() or
         // transient reward-binding gap.  The recovery timer will retry at the next tick.
         m_logger->warn("[Worker_manager]   GET_BLOCK not sent — request_work() returned empty "
                        "(authenticated={}, primary_connected={}, see Solo logs for specific suppression reason)",
@@ -2886,7 +2884,7 @@ void Worker_manager::check_template_health()
     // so it respects the can_request_get_block() session gate and hashPrevBlock mismatch backoff.
     //
     // Cooldown guard: fire at most once per TEMPLATE_AGE_COOLDOWN_SECONDS to prevent
-    // the 5-second health tick from repeatedly refreshing the same old template.
+    // the 5-second health tick from exhausting the node's 25/60s GET_BLOCK rate limit.
     if (template_age > protocol::ProtocolConstants::TEMPLATE_AGE_WARNING_SECONDS &&
         template_age <= protocol::ProtocolConstants::TEMPLATE_AGE_EMERGENCY_TIMEOUT_SECONDS) {
         auto now = std::chrono::steady_clock::now();

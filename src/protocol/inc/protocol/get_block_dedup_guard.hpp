@@ -19,18 +19,17 @@ namespace protocol {
 //   2. Eliminate the need for push_notification_handler to carry a reset_dedup_fn callback
 //   3. Provide a testable, reusable dedup module
 //
-// The guard implements two layers:
-//   - Miner cooldown (2 seconds): mirrors node AutoCoolDown and prevents request storms
-//   - Template-state guard: prevents redundant GET_BLOCK when unified height hasn't
-//     changed and a valid template already exists
+// The guard implements two tiers:
+//   - Rapid-burst guard (100ms): prevents two code paths racing on the same event
+//   - Height-based guard: prevents redundant GET_BLOCK when unified height hasn't changed
+//     and a valid template already exists
 //
 // The bypass policy is reason-aware via GetBlockReason:
-//   - bypass_state  (RECOVERY_FORCED, RECOVERY_TIMER):
-//                   skip in-flight/height state checks after the 2s cooldown passes
+//   - bypass_all    (RECOVERY_FORCED, RECOVERY_TIMER, HEALTH_NO_TEMPLATE):
+//                   skip both guards — degraded-mode retries always make progress
 //   - bypass_height (PUSH_*, GET_ROUND_*, VALIDATION_FAILURE, SESSION_REAUTH,
-//                   TEMPLATE_AGE_*, BLOCK_REJECTED, HEIGHT_DRIFT,
-//                   HEALTH_NO_TEMPLATE, etc.):
-//                   skip height guard, keep the 2s cooldown
+//                   TEMPLATE_AGE_*, BLOCK_REJECTED, HEIGHT_DRIFT, etc.):
+//                   skip height guard, keep 100ms rapid-burst guard
 //   - full dedup    (INITIAL_REQUEST, HEALTH_CHANNEL_ADVANCE, HEALTH_STALE_SUPPRESSED):
 //                   both guards active — normal advance, no urgency
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,11 +38,11 @@ public:
     /// Result of a dedup check.
     enum class Verdict {
         ALLOW,                  ///< Request should proceed
-        SUPPRESS_COOLDOWN,      ///< Suppressed by 2s miner-side cooldown
+        SUPPRESS_RAPID_BURST,   ///< Suppressed by 100ms rapid-burst guard
         SUPPRESS_HEIGHT_MATCH,  ///< Suppressed by height-based guard (same unified + valid template)
     };
 
-    static constexpr int64_t COOLDOWN_WINDOW_MS = 2000;  // miner-side GET_BLOCK cooldown
+    static constexpr int64_t DEDUP_WINDOW_MS = 100;  // rapid-burst guard window
 
     explicit GetBlockDedupGuard(std::shared_ptr<spdlog::logger> logger = nullptr)
         : m_logger{std::move(logger)}
@@ -64,27 +63,25 @@ public:
         bool bypass_all    = should_bypass_all_dedup(reason);
         bool bypass_height = should_bypass_height_dedup(reason);
 
-        // Guard 1: universal miner-side cooldown.  This intentionally applies
-        // before reason-based bypasses so forced recovery and HEALTH_NO_TEMPLATE
-        // cannot hammer node AutoCoolDown with back-to-back GET_BLOCK requests.
+        if (bypass_all) {
+            if (m_logger) {
+                m_logger->debug("[DedupGuard] bypass_all — reason: {}", reason_name(reason));
+            }
+            return Verdict::ALLOW;
+        }
+
+        // Guard 1: rapid-burst (100ms window)
         if (m_last_transmitted_tp != std::chrono::steady_clock::time_point{}) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - m_last_transmitted_tp).count();
-            if (elapsed_ms < COOLDOWN_WINDOW_MS) {
+            if (elapsed_ms < DEDUP_WINDOW_MS) {
                 if (m_logger) {
-                    m_logger->debug("[DedupGuard] cooldown: suppressing ({}ms < {}ms, reason={})",
-                                  elapsed_ms, COOLDOWN_WINDOW_MS, reason_name(reason));
+                    m_logger->debug("[DedupGuard] rapid-burst: suppressing ({}ms < {}ms, reason={})",
+                                  elapsed_ms, DEDUP_WINDOW_MS, reason_name(reason));
                 }
-                return Verdict::SUPPRESS_COOLDOWN;
+                return Verdict::SUPPRESS_RAPID_BURST;
             }
-        }
-
-        if (bypass_all) {
-            if (m_logger) {
-                m_logger->debug("[DedupGuard] bypass_state — reason: {}", reason_name(reason));
-            }
-            return Verdict::ALLOW;
         }
 
         if (bypass_height) {
@@ -133,18 +130,18 @@ public:
         m_last_hash_prev = hash_prev;
     }
 
-    /// Reset template-state dedup.  The miner cooldown timestamp is deliberately
-    /// preserved so canonical-tip resets cannot bypass the 2s GET_BLOCK floor.
+    /// Reset all dedup state.  The next check() will always return ALLOW.
     ///
     /// Must be called when the canonical tip-anchor changes (same-height reorg,
     /// cross-channel unified advance) or a new recovery epoch begins — the
-    /// prior height/hash state refers to a request for the *old* canonical tip.
+    /// prior dedup state refers to a request for the *old* canonical tip.
     void reset()
     {
+        m_last_transmitted_tp = {};
         m_last_unified_height = 0;
         m_last_hash_prev = uint1024_t{};
         if (m_logger) {
-            m_logger->debug("[DedupGuard] template-state reset — cooldown timestamp preserved");
+            m_logger->debug("[DedupGuard] state reset — next request will not be suppressed");
         }
     }
 

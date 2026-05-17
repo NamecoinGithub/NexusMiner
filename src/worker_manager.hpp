@@ -138,7 +138,7 @@ private:
     void stop_all_workers();
     /**
      * @param reason Semantic reason for the GET_BLOCK request.
-     *               The template-state bypass policy is derived from the reason via
+     *               The dedup bypass policy is derived from the reason via
      *               should_bypass_height_dedup() / should_bypass_all_dedup()
      *               in get_block_reason.hpp.
      *               This helper is request-only: it does not mutate recovery state

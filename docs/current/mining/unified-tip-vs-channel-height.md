@@ -134,9 +134,8 @@ structural rather than push-driven.
 **Same-height tip replacement** (hash mismatch at same channel height) is still
 detected and triggers a template `discard_template()` to force replacement.
 
-**Every PUSH implies fresh work is coming** — the node auto-sends `BLOCK_DATA`,
-and `GetBlockDedupGuard`'s 2-second cooldown prevents PUSH, GET_ROUND, and
-health/recovery paths from racing into duplicate GET_BLOCK requests.
+**Every PUSH always requests fresh work** — the 100ms rapid-burst guard in
+`GetBlockDedupGuard` prevents two identical pushes from racing.
 
 ### Decision Summary (Unified Model)
 
@@ -306,19 +305,19 @@ All height values in the mining protocol use one of two semantics:
 | Cross-channel tip advance | `Cross-channel tip advance: unified X → Y — requesting fresh template` |
 | hashPrevBlock reorg discard | `hashPrevBlock mismatch (canonical=..., template=...) — discarding stale template` |
 | No template yet | `No template — requesting initial {channel} template` |
-| Dedup suppressed | `[DedupGuard] height-match: suppressing` or `[DedupGuard] cooldown: suppressing` |
+| Dedup suppressed | `[DedupGuard] height-match: suppressing` or `[DedupGuard] rapid-burst: suppressing` |
 | Dedup bypass | `[DedupGuard] bypass_height — reason: push_stale` |
 
 ### 8.2 Diagnostic Checklist
 
 | Symptom | Likely cause | Check |
 |---------|-------------|-------|
-| Template refreshed on every PUSH | Correct — unified model | Every PUSH is followed by BLOCK_DATA |
+| Template refreshed on every PUSH | Correct — unified model | Every PUSH requests fresh work |
 | Cross-channel push requests fresh template | Correct — `hashPrevBlock` changed | Look for `Cross-channel tip advance` in logs |
 | Template **not** refreshed after push | Bug or dedup suppression | Check `[DedupGuard]` logs for suppression |
 | Template submitted and rejected as STALE | Push missed; submitted on old `hashPrevBlock` | Check for missed push notifications |
 | Template discarded with `hashPrevBlock_mismatch_reorg` | Same-height chain reorg detected | Correct — canonical tip moved without height change; miner requests fresh work |
-| Rapid GET_BLOCK suppressed | 2s miner cooldown | Expected — prevents request storms; check `[DedupGuard] cooldown` |
+| Rapid GET_BLOCK suppressed | 100ms rapid-burst guard | Expected — prevents push races; check `[DedupGuard] rapid-burst` |
 
 ### 8.3 Verifying Push Subscription
 

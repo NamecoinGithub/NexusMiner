@@ -44,7 +44,7 @@ namespace config
 		, m_tls_client_key_path{""}  // Default: no client key
 		, m_tls_client_key_password{""}  // Default: no password
 		, m_enable_sim_link{true}  // Default: SIM Link enabled (dual stateless+legacy connection)
-		, m_get_block_interval_ms{2000}  // Default: 2000ms (aligned with node AutoCoolDown)
+		, m_get_block_interval_ms{1000}  // Default: 1000ms (aligned with LLL-TAO AutoCoolDown redesign)
 		, m_colin_enabled{true}  // Default: Colin diagnostic agent enabled
 		, m_colin_report_interval_seconds{180}  // Default: report every 180 seconds
 	{

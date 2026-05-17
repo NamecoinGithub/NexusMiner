@@ -62,10 +62,9 @@ enum class GetBlockReason : uint8_t {
 // GetBlockPolicy — dedup bypass policy derived from the request reason
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Returns true when the reason may bypass in-flight/height state dedup after
-/// the universal 2-second miner cooldown has passed.  Kept under the historical
-/// name because several call sites use it for "force past stale state" policy;
-/// it no longer bypasses the cooldown guard.
+/// Returns true when the reason should bypass ALL dedup guards (height-based
+/// AND rapid-burst).  Used for degraded-mode recovery retries that must
+/// always make progress regardless of cached state.
 inline bool should_bypass_all_dedup(GetBlockReason reason)
 {
     switch (reason) {
@@ -73,9 +72,14 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
         case GetBlockReason::RECOVERY_TIMER:
         // After a submit succeeds the template that produced it is spent even if
         // the node has not yet delivered a PUSH/BLOCK_DATA replacement.  This
-        // request must never be suppressed by stale in-flight/height dedup state
-        // after the 2-second cooldown has elapsed.
+        // request must never be suppressed by rapid-burst or height dedup state.
         case GetBlockReason::BLOCK_ACCEPTED:
+        // When there is genuinely no valid template the height-based guard can
+        // never fire (no template → guard passes), but the 100ms rapid-burst
+        // guard can still suppress legitimate retries from the 30s health timer
+        // if a push-triggered GET_BLOCK fired moments before.  Bypass all dedup
+        // so the health timer always makes progress when the miner has no work.
+        case GetBlockReason::HEALTH_NO_TEMPLATE:
             return true;
         default:
             return false;
@@ -83,7 +87,7 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
 }
 
 /// Returns true when the reason should bypass the height-based dedup guard
-/// but still respect the 2-second miner cooldown.  Used for proactive
+/// but still respect the 100ms rapid-burst guard.  Used for proactive
 /// refreshes where heights haven't changed but we legitimately need a new
 /// template (e.g., age-based refresh during long block periods).
 inline bool should_bypass_height_dedup(GetBlockReason reason)
@@ -104,10 +108,6 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         case GetBlockReason::VALIDATION_FAILURE:
         case GetBlockReason::HEIGHT_DRIFT:
         case GetBlockReason::HEALTH_CHANNEL_STALE:
-        // No-template recovery must bypass height dedup, but it must still
-        // respect cooldown/in-flight suppression.  Otherwise health checks
-        // and deferred recovery timers can pile onto an already-pending
-        // GET_BLOCK and amplify node AutoCoolDown empty-response storms.
         case GetBlockReason::HEALTH_NO_TEMPLATE:
         case GetBlockReason::TEMPLATE_FEED_FAILURE:
         case GetBlockReason::SESSION_REAUTH:
@@ -118,7 +118,7 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         // already recorded a GET_BLOCK at the same unified height.  Without this
         // bypass the height-match guard suppresses the refresh and the miner gets
         // stuck mining on a stale tip for 10+ minutes until the template age
-        // emergency fires.  The 2-second cooldown still prevents storms.
+        // emergency fires.  The 100ms rapid-burst guard still prevents storms.
         // NOTE: HEALTH_TIP_MOVED removed — GET_ROUND is the backup to PUSH.
         case GetBlockReason::HEALTH_CHANNEL_ADVANCE:
 
