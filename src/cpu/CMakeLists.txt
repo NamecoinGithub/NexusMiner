@@ -41,10 +41,10 @@ add_nexusminer_test(
 
 if(WITH_PRIME)
     target_link_libraries(cpu libprimesieve-static)
-    if(WIN32)
-        target_link_libraries(cpu mpir) # OpenSSL::Crypto OpenSSL::applink)
+    if(NEXUSMINER_PRIME_BIGINT_LIB)
+        target_link_libraries(cpu ${NEXUSMINER_PRIME_BIGINT_LIB})
     else()
-       target_link_libraries(cpu gmp) # OpenSSL::Crypto OpenSSL::applink)
+        message(FATAL_ERROR "WITH_PRIME is enabled but NEXUSMINER_PRIME_BIGINT_LIB is not set")
     endif()
 
     add_nexusminer_test(

@@ -148,6 +148,7 @@ endif()
 
 #PRIME
 if(WITH_PRIME)
+    set(NEXUSMINER_PRIME_BIGINT_LIB "")
     find_package(Boost)
     if(NOT Boost_FOUND)
         message(WARNING "Boost not found. Disabling PRIME support. Run: sudo apt-get install libboost-all-dev")
@@ -155,22 +156,31 @@ if(WITH_PRIME)
     endif()
     
     if(WITH_PRIME)
-        if(WIN32)
-           find_package(MPIR)
-           if(NOT MPIR_FOUND)
-               message(WARNING "MPIR not found. Disabling PRIME support. Install MPIR from http://www.mpir.org/")
-               set(WITH_PRIME OFF)
-           endif()
-        else()
-           find_package(GMP)
-           if(NOT GMP_FOUND)
-               message(WARNING "GMP not found. Disabling PRIME support. Run: sudo apt-get install libgmp-dev")
-               set(WITH_PRIME OFF)
-           endif()
+        if(MSVC)
+            find_package(MPIR)
+            if(MPIR_FOUND)
+                set(NEXUSMINER_PRIME_BIGINT_LIB mpir)
+            else()
+                message(WARNING "MPIR not found with MSVC toolchain. Trying GMP fallback.")
+            endif()
+        endif()
+
+        if(NOT NEXUSMINER_PRIME_BIGINT_LIB)
+            find_package(GMP)
+            if(GMP_FOUND)
+                set(NEXUSMINER_PRIME_BIGINT_LIB gmp)
+            elseif(MSVC)
+                message(WARNING "Neither MPIR nor GMP found. Disabling PRIME support. Install MPIR or provide GMPDIR.")
+                set(WITH_PRIME OFF)
+            else()
+                message(WARNING "GMP not found. Disabling PRIME support. Run: sudo apt-get install libgmp-dev")
+                set(WITH_PRIME OFF)
+            endif()
         endif()
     endif()
     
     if(WITH_PRIME)
+        message(STATUS "PRIME big integer backend: ${NEXUSMINER_PRIME_BIGINT_LIB}")
         include_directories(${Boost_INCLUDE_DIRS})
         include(FetchContent)
         FetchContent_Declare(primesieve GIT_REPOSITORY https://github.com/kimwalisch/primesieve.git GIT_TAG master)
@@ -273,7 +283,9 @@ install(TARGETS NexusMiner
 # Install configuration files
 install(DIRECTORY configs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/nexusminer/configs
-    FILES_MATCHING PATTERN "*.conf"
+    FILES_MATCHING
+        PATTERN "*.conf"
+        PATTERN "*.config"
 )
 
 # Install documentation

@@ -93,6 +93,24 @@
       }
     },
     {
+      "name": "windows-mingw-cross",
+      "displayName": "Windows MinGW Cross (Linux host)",
+      "description": "Linux-hosted cross-compilation for Windows with MinGW-w64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-mingw-cross",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WITH_PRIME": "ON",
+        "NEXUSMINER_STATIC_OPENSSL": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
       "name": "macos",
       "displayName": "macOS",
       "description": "macOS build with dynamic OpenSSL",
@@ -150,6 +168,10 @@
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",
       "configuration": "Release"
+    },
+    {
+      "name": "windows-mingw-cross",
+      "configurePreset": "windows-mingw-cross"
     },
     {
       "name": "macos",

@@ -34,7 +34,10 @@ target_include_directories(LLC
     PRIVATE falcon
 )
 
-target_link_libraries(LLC OpenSSL::Crypto OpenSSL::applink)
-if(WIN32 AND STATIC_OPENSSL)
-    target_link_libraries(LLC crypt32.lib)
+target_link_libraries(LLC OpenSSL::Crypto)
+if(MSVC AND TARGET OpenSSL::applink)
+    target_link_libraries(LLC OpenSSL::applink)
+endif()
+if(WIN32 AND NEXUSMINER_STATIC_OPENSSL)
+    target_link_libraries(LLC crypt32)
 endif()
