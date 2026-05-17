@@ -1022,7 +1022,7 @@ void test_should_bypass_height_state_after_cooldown_alias() {
             GetBlockReason::HEALTH_STALE_SUPPRESSED}) {
         bool a = should_bypass_all_dedup(reason);
         bool b = should_bypass_height_state_after_cooldown(reason);
-        char buf[128];
+        char buf[256];
         std::snprintf(buf, sizeof(buf),
             "should_bypass_height_state_after_cooldown(%s) == should_bypass_all_dedup",
             reason_name(reason));

@@ -92,6 +92,9 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
 /// the 2-second cooldown passes.  Does NOT grant any special treatment for the
 /// pending in-flight guard — pending suppression is gated by PendingGetBlock's
 /// 4-second auto-expiry, not by reason.
+///
+/// TODO: Once get_block_interval_ms is wired to the runtime cooldown, this function
+/// may diverge from should_bypass_all_dedup() to support per-reason minimum intervals.
 inline bool should_bypass_height_state_after_cooldown(GetBlockReason reason)
 {
     return should_bypass_all_dedup(reason);
