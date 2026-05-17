@@ -28,6 +28,9 @@ option(WITH_GPU_AMD "Build with AMD gpu workers, Requires HIP and clang" OFF)
 option(WITH_GPU_CUDA "Build with Nvidia gpu workers, CUDA needed" OFF)
 option(WITH_GPU_HOST_STUBS "Build gpu/worker_hash.cpp against stub CUDA functions (no CUDA toolchain required); mutually exclusive with WITH_GPU_CUDA" OFF)
 option(WITH_PRIME "Build with PRIME mining support, BOOST and GMP or MPIR needed" OFF)
+# Selected PRIME bigint backend library identifier ("gmp" or "mpir"), resolved
+# during dependency discovery and consumed by cpu/gpu subdirectories.
+set(NEXUSMINER_PRIME_BIGINT_LIB "")
 
 # Default OFF for macOS (Homebrew OpenSSL is typically dynamic)
 if(APPLE)
@@ -148,7 +151,6 @@ endif()
 
 #PRIME
 if(WITH_PRIME)
-    set(NEXUSMINER_PRIME_BIGINT_LIB "")
     find_package(Boost)
     if(NOT Boost_FOUND)
         message(WARNING "Boost not found. Disabling PRIME support. Run: sudo apt-get install libboost-all-dev")
@@ -161,7 +163,7 @@ if(WITH_PRIME)
             if(MPIR_FOUND)
                 set(NEXUSMINER_PRIME_BIGINT_LIB mpir)
             else()
-                message(WARNING "MPIR not found with MSVC toolchain. Trying GMP fallback.")
+                message(WARNING "MPIR not found with MSVC toolchain. GMP fallback will be attempted.")
             endif()
         endif()
 
@@ -281,6 +283,7 @@ install(TARGETS NexusMiner
 )
 
 # Install configuration files
+# Keep both patterns for compatibility during .conf -> .config migration.
 install(DIRECTORY configs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/nexusminer/configs
     FILES_MATCHING

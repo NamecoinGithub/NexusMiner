@@ -44,7 +44,7 @@ if (WITH_GPU_CUDA)
         if(NEXUSMINER_PRIME_BIGINT_LIB)
             target_link_libraries(gpu ${NEXUSMINER_PRIME_BIGINT_LIB})
         else()
-            message(FATAL_ERROR "WITH_PRIME is enabled but NEXUSMINER_PRIME_BIGINT_LIB is not set")
+            message(FATAL_ERROR "WITH_PRIME is enabled but no PRIME bigint backend was selected; install GMP/MPIR and re-run CMake configure")
         endif()
         
     endif()

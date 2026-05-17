@@ -10,6 +10,9 @@ on:
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
 
+permissions:
+  contents: read
+
 jobs:
   build-release-windows:
     name: Windows MSVC PRIME release
@@ -26,16 +29,18 @@ jobs:
 
       - name: Install release dependencies
         run: |
-          & "$env:GITHUB_WORKSPACE\vcpkg\vcpkg.exe" install --triplet x64-windows openssl gmp boost
+          & "$env:GITHUB_WORKSPACE\vcpkg\vcpkg.exe" install --triplet x64-windows openssl gmp boost-integer boost-multiprecision
 
       - name: Configure CMake
+        # This workflow intentionally provisions GMP; CMake uses MPIR when present,
+        # otherwise it falls back to GMP for PRIME bigint linkage.
         run: >
           cmake --preset windows-msvc
-          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
           -DWITH_PRIME=ON
           -DNEXUSMINER_STATIC_OPENSSL=OFF
-          -DGMPDIR="${{ github.workspace }}\vcpkg\installed\x64-windows"
+          -DGMPDIR="${{ github.workspace }}/vcpkg/installed/x64-windows"
 
       - name: Build
         run: cmake --build --preset windows-msvc

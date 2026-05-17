@@ -10,8 +10,13 @@ mkdir -p "${DIST_DIR}"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}/configs"
 
+if ! command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
+    echo "Missing x86_64-w64-mingw32-g++ in PATH; install MinGW-w64 cross toolchain first." >&2
+    exit 1
+fi
+
 cmake --preset windows-mingw-cross
-cmake --build --preset windows-mingw-cross -j"$(nproc)"
+cmake --build --preset windows-mingw-cross -- -j"$(nproc)"
 
 EXE_PATH="${BUILD_DIR}/NexusMiner.exe"
 if [[ ! -f "${EXE_PATH}" ]]; then
