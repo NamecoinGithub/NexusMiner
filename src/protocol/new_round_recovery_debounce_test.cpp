@@ -173,44 +173,32 @@ void test1_push_before_new_round()
 
     SoloFixture f;
 
-    // Step 1: HASH_BLOCK_AVAILABLE arrives (simulates node PUSH)
+    // Step 1: HASH_BLOCK_AVAILABLE arrives (simulates node PUSH) for height
+    // greater-or-equal to the upcoming NEW_ROUND height — this is exactly the
+    // production race we want to suppress.  push_implies_block_data_in_transit()
+    // returns true because last_push_notification_at is fresh and
+    // push_unified_height (6693557) >= NEW_ROUND unified_height (6693556).
     f.send_hash_push(6693557, 201);
 
-    // Step 2: NEW_ROUND arrives 1ms later with the same unified height
-    // (the deferred recovery should be scheduled and then immediately
-    //  cancelled because a PUSH just arrived — cancel_recovery_timer fires
-    //  in on_push_notification which ran first, so m_last_push_received_time
-    //  is fresh when schedule_recovery_get_block checks template state)
+    // Step 2: NEW_ROUND arrives 1ms later.  schedule_recovery_get_block() now
+    // detects the in-transit BLOCK_DATA and refuses to start the 2s timer.
     f.send_new_round(6693556, 200);
 
-    // Step 3: Let the io_context drain for 100ms — the 2s timer should fire
-    // only if not cancelled.  Here it was scheduled AFTER the PUSH, so the
-    // timer has NOT been cancelled yet (cancel happens before the next push).
-    // However: the PUSH arrived before NEW_ROUND, so when the timer fires
-    // after 2s it will find a valid template if BLOCK_DATA was received, or
-    // simply fire (since no template was installed in this unit-test context).
-    //
-    // The key assertion: the timer is scheduled (is_recovery_pending = true after NEW_ROUND)
-    // and may or may not fire depending on template validity. What we CANNOT assert here
-    // without a real BLOCK_DATA is that the timer was cancelled.
-    //
-    // To properly test the "PUSH cancels timer" we need PUSH AFTER NEW_ROUND,
-    // which is Test 2. Test 1 validates that the timer is correctly STARTED.
-    print_test_result("After PUSH then NEW_ROUND: recovery timer is pending",
-                      f.solo.is_recovery_pending());
+    // Post-fix expectation: the recovery GET_BLOCK is SUPPRESSED entirely
+    // (no timer scheduled, no GET_BLOCK fired) because BLOCK_DATA is in
+    // transit from the just-arrived PUSH.
+    print_test_result("After PUSH then NEW_ROUND: recovery NOT scheduled (PUSH-in-transit guard)",
+                      !f.solo.is_recovery_pending());
 
-    // Drain without waiting full 2s — the timer should still be pending
+    // Drain without waiting full 2s — nothing should change because no timer was started.
     f.run_for(std::chrono::milliseconds(100));
-    print_test_result("After 100ms: recovery still pending (push arrived before NEW_ROUND, "
-                      "so no PUSH arrives during the 2s window to cancel it)",
-                      f.solo.is_recovery_pending());
+    print_test_result("After 100ms: recovery still not pending (no timer was ever scheduled)",
+                      !f.solo.is_recovery_pending());
 
-    // Drain remaining 2s+ to let the timer fire (since no PUSH cancels it here —
-    // the PUSH arrived BEFORE the NEW_ROUND, so m_last_push_received_time is
-    // already recorded but no new PUSH arrives during the 2s wait window)
+    // Drain remaining 2s+ — recovery must never fire because no timer was scheduled.
     f.run_for(std::chrono::seconds(3));
-    print_test_result("After 3s with no cancellation: recovery timer fired exactly once",
-                      f.solo.get_recovery_fired_count() == 1);
+    print_test_result("After 3s: recovery NEVER fired (BLOCK_DATA in transit; GET_BLOCK suppressed)",
+                      f.solo.get_recovery_fired_count() == 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

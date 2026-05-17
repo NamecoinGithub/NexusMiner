@@ -674,10 +674,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* canonical replacement now takes the dedicated soft-refresh handler below, */
         /* which withholds submissions while the replacement template is fetched.    */
         m_primary_node_session->set_recovery_initiated_handler(
-            [this]() {
+            [this](protocol::GetBlockReason reason) -> bool {
                 mark_recovery_initiated("push_staleness");
                 // Workers keep running while we request fresh work/GET_BLOCK.
-                retry_template_request(protocol::GetBlockReason::RECOVERY_FORCED);
+                // Return value: true iff a GET_BLOCK was transmitted on the wire.
+                // Solo uses this to decide whether to issue a local fallback request
+                // (single-chokepoint contract — see Solo::dispatch_recovery_or_fallback).
+                return retry_template_request_returning(reason);
             }
         );
         m_logger->info("[Worker_manager] Recovery handler registered");
@@ -2440,6 +2443,16 @@ void Worker_manager::stop_all_workers()
 
 void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
 {
+    // Wrapper maintains the historical void signature for the many existing
+    // callers that don't care whether the GET_BLOCK was transmitted; new
+    // chokepoint callers (the Solo recovery handler) use the
+    // retry_template_request_returning() variant directly so they can decide
+    // whether to issue a local fallback.
+    (void) retry_template_request_returning(reason);
+}
+
+bool Worker_manager::retry_template_request_returning(protocol::GetBlockReason reason)
+{
     auto now = std::chrono::steady_clock::now();
 
     // Bug 5 fix: Prevent burst duplicate GET_BLOCK requests when both the forced
@@ -2454,7 +2467,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         if (since_last_ms < GET_BLOCK_BURST_GUARD_MS) {
             m_logger->debug("[Worker_manager] GET_BLOCK burst-suppressed: {}ms since last request "
                            "(guard={}ms, reason={})", since_last_ms, GET_BLOCK_BURST_GUARD_MS, reason_name(reason));
-            return;
+            return false;
         }
     }
 
@@ -2467,14 +2480,14 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     if (!m_primary_node_session || !m_primary_node_session->is_authenticated()) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=missing_authenticated_session");
         m_logger->info("[Worker_manager] GET_BLOCK deferred — no authenticated session available");
-        return;
+        return false;
     }
 
     auto solo_protocol = m_primary_node_session->get_active_protocol();
     if (!solo_protocol) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=no_protocol");
         m_logger->error("[Worker_manager] Failed to get protocol from NodeSession");
-        return;
+        return false;
     }
 
     // ── GET_BLOCK exponential backoff (hashPrevBlock mismatch storm guard) ───
@@ -2528,7 +2541,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
                 m_get_block_backoff_until - now).count();
             m_logger->info("[Worker_manager] GET_BLOCK suppressed: context=hashprev_mismatch_backoff "
                            "({}ms remaining)", remaining_ms);
-            return;
+            return false;
         } else if (should_bypass_all_dedup(reason) &&
                    m_get_block_backoff_until != std::chrono::steady_clock::time_point{} &&
                    now < m_get_block_backoff_until) {
@@ -2547,7 +2560,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=solo_not_authenticated");
         m_logger->info("[Worker_manager] GET_BLOCK deferred — not yet authenticated (auth in progress); "
                        "health monitor will retry when session is established");
-        return;
+        return false;
     }
 
     // Early-exit if primary TCP connection is down — request_work() would silently
@@ -2556,7 +2569,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
     if (!m_primary_node_session->is_primary_connected()) {
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=primary_disconnected");
         m_logger->warn("[Worker_manager] GET_BLOCK deferred — primary TCP connection is not established");
-        return;
+        return false;
     }
 
     bool no_valid_template = !has_valid_template_available(solo_protocol);
@@ -2570,7 +2583,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         m_logger->debug("[Worker_manager] GET_BLOCK suppressed: context=session_not_ready_for_get_block");
         m_logger->info("[Worker_manager] GET_BLOCK deferred — session not ready for GET_BLOCK; "
                        "health monitor will retry at next tick");
-        return;
+        return false;
     }
 
     // Request fresh work via NodeSession (wire-level GET_BLOCK)
@@ -2591,9 +2604,10 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
                 ++m_get_block_forced_retry_total;
             }
             m_logger->info("[Worker_manager] → GET_BLOCK sent (recovery epoch {})", m_epoch_coordinator->recovery_epoch());
+            return true;
         } else {
             m_logger->warn("[Worker_manager] GET_BLOCK payload built but not queued on transport");
-            return;
+            return false;
         }
     } else {
         auto last_status = solo_protocol->get_last_get_block_request_status();
@@ -2630,6 +2644,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
             }
             schedule_forced_recovery_retry("request_work_empty");
         }
+        return false;
     }
 }
 

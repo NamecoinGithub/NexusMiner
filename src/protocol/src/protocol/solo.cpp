@@ -72,6 +72,40 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
     return true;
 }
 
+void Solo::dispatch_recovery_or_fallback(const std::shared_ptr<network::Connection>& connection,
+                                         GetBlockReason reason,
+                                         const char* fallback_context)
+{
+    // Production chokepoint: Worker_manager owns the GET_BLOCK transmission
+    // schedule (burst guard, hashprev backoff, auth/session gates).  If the
+    // handler indicates it scheduled a request, do NOT also fire a local one —
+    // that was the "double-tap" storm.
+    if (m_recovery_handler) {
+        m_logger->info("[Solo] Delegating recovery GET_BLOCK to handler (reason={})",
+                       reason_name(reason));
+        const bool handler_scheduled = m_recovery_handler(reason);
+        if (handler_scheduled) {
+            return;
+        }
+        m_logger->debug("[Solo] Recovery handler declined (suppressed/deferred); "
+                        "no local fallback issued (reason={})", reason_name(reason));
+        return;
+    }
+
+    // Fallback path: no handler registered (tests, standalone Solo, or a
+    // NodeSession that has not yet wired Worker_manager).  Issue a direct
+    // GET_BLOCK on the supplied connection so unit-test expectations are
+    // preserved and standalone modes can still recover.
+    if (!connection) {
+        m_logger->warn("[Solo] Recovery GET_BLOCK suppressed: no handler and no connection (reason={})",
+                       reason_name(reason));
+        return;
+    }
+    if (!request_and_queue_get_block(connection, reason, fallback_context)) {
+        m_logger->error("[Solo] Recovery fallback GET_BLOCK failed (reason={})", reason_name(reason));
+    }
+}
+
 uint32_t Solo::get_blocks_accepted() const
 {
     return m_stats_collector ? m_stats_collector->get_global_stats().m_accepted_blocks : 0;
@@ -2169,35 +2203,28 @@ bool Solo::activate_push_lane_after_channel_ack(std::shared_ptr<network::Connect
 
 void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-        // Clear in-flight GET_BLOCK state unconditionally — the node has responded.
-        // Even invalid/empty responses mean the pending request has been serviced;
-        // leaving the flag set strands it for up to TIMEOUT_SECONDS, suppressing
-        // legitimate future GET_BLOCK requests from PUSH/GET_ROUND/Health paths.
-        m_pending_get_block.clear();
-
-        // Enhanced diagnostics: Check payload is non-null
+        // ─────────────────────────────────────────────────────────────────────
+        // Phase A2: validate payload BEFORE clearing the in-flight guard.
+        // If a node sends back-to-back malformed BLOCK_DATA frames, clearing
+        // the guard up-front would let each one trigger a fresh recovery
+        // request before the previous one has even been accounted for.
+        // ─────────────────────────────────────────────────────────────────────
         if (!packet.m_data) {
             m_logger->error("[Solo] CRITICAL: BLOCK_DATA received with null payload");
-            m_logger->error("[Solo] Recovery: Empty BLOCK_DATA indicates node issue — exiting recovery and retrying");
-
-            // Notify Worker_manager to re-initiate recovery (exit current recovery epoch
-            // and start a new one with backoff). This prevents staying stuck in recovery
-            // mode indefinitely when the node sends empty responses.
-            if (m_recovery_handler) {
-                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                 GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo] Recovery GET_BLOCK")) {
-                    m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                }
-            }
+            m_logger->error("[Solo] Recovery: Empty BLOCK_DATA indicates node issue — delegating to recovery handler");
+            m_pending_get_block.clear();
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::VALIDATION_FAILURE,
+                                          "[Solo] Null-payload recovery GET_BLOCK");
             return;
         }
+
+        // Clear in-flight GET_BLOCK state — the node has responded with at least
+        // a non-null payload. Even invalid responses past this point mean the
+        // pending request has been serviced; leaving the flag set strands it for
+        // up to TIMEOUT_SECONDS, suppressing legitimate future GET_BLOCK requests.
+        m_pending_get_block.clear();
+
         
         // ═══════════════════════════════════════════════════════════════════
         // CRITICAL FIX: Accept BLOCK_DATA as initial template after MINER_READY
@@ -2224,27 +2251,20 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         m_logger->debug("[Solo] BLOCK_DATA hex dump:");
         m_logger->debug("\n{}", format_llp_payload_hexdump(packet.m_data, 256));
         
-        // Validate packet has minimum required data
-        if (packet.m_length < MIN_BLOCK_HEADER_SIZE) {
-            m_logger->error("[Solo] CRITICAL: BLOCK_DATA packet has invalid length {} < minimum {}",
-                packet.m_length, MIN_BLOCK_HEADER_SIZE);
+        // Validate packet has minimum required data — guard BOTH the framer-declared
+        // length AND the actual buffer size so the BE metadata read below cannot
+        // dereference past the end of m_data.
+        if (packet.m_length < MIN_BLOCK_HEADER_SIZE ||
+            packet.m_data->size() < MIN_BLOCK_HEADER_SIZE) {
+            m_logger->error("[Solo] CRITICAL: BLOCK_DATA packet has invalid size "
+                            "(declared={} actual={} minimum={})",
+                packet.m_length, packet.m_data->size(), MIN_BLOCK_HEADER_SIZE);
             m_logger->error("[Solo]   - This indicates corrupted or incomplete block data");
-            m_logger->error("[Solo] Recovery: Invalid BLOCK_DATA — exiting recovery and retrying");
+            m_logger->error("[Solo] Recovery: Invalid BLOCK_DATA — delegating to recovery handler");
 
-            // Notify Worker_manager to re-initiate recovery (same as null payload case)
-            if (m_recovery_handler) {
-                m_logger->info("[Solo] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-                if (connection) {
-                    if (!request_and_queue_get_block(connection,
-                                                     GetBlockReason::VALIDATION_FAILURE,
-                                                     "[Solo] Recovery GET_BLOCK")) {
-                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                    }
-                }
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::VALIDATION_FAILURE,
+                                          "[Solo] Short-payload recovery GET_BLOCK");
             return;
         }
         
@@ -2295,114 +2315,47 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
         auto block_serial = std::make_shared<network::Payload>(
             packet.m_data->begin() + BLOCK_METADATA_PREFIX_SIZE, packet.m_data->end());
 
-        if (m_template_interface) {
-            m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
-            
-            auto validation_result = m_template_interface->read_template(block_serial, source_endpoint, false);
-            
-            if (!validation_result.is_valid) {
-                m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);
-                
-                if (validation_result.is_stale) {
-                    m_logger->warn("[Solo READ] Template is stale - requesting fresh work");
-                }
-                
-                if (connection) {
-                    request_and_queue_get_block(connection,
-                                                GetBlockReason::VALIDATION_FAILURE,
-                                                "[Solo] Validation recovery GET_BLOCK");
-                }
-                return;
-            }
-            
-            m_logger->info("[Solo READ] Template validated successfully in {} μs",
-                validation_result.validation_time.count());
-            if (!finalize_and_feed_current_template(nUnifiedHeight,
-                                                    nChannelHeight,
-                                                    "Solo FEED",
-                                                    true)) {
-                m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
-                if (connection) {
-                    request_and_queue_get_block(connection,
-                                                GetBlockReason::TEMPLATE_FEED_FAILURE,
-                                                "[Solo] Template feed recovery GET_BLOCK");
-                }
-                return;
-            }
+        if (!m_template_interface) {
+            // m_template_interface is constructed unconditionally in Solo's
+            // constructor; this branch is unreachable in production.  Treat it
+            // as a hard initialization failure rather than running a parallel
+            // legacy decode path (the old fallback skipped the 12-byte metadata
+            // prefix strip and would silently corrupt nHeight/nBits/nNonce).
+            m_logger->error("[Solo] CRITICAL: Template interface missing — cannot process BLOCK_DATA");
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::VALIDATION_FAILURE,
+                                          "[Solo] Missing template-interface recovery GET_BLOCK");
+            return;
         }
-        else {
-            // Fallback: Use legacy processing if template interface not available
-            m_logger->warn("[Solo] Template interface not available, using legacy processing");
-            
-            try {
-                // Use centralized deserializer
-                auto block = nexusminer::llp_utils::deserialize_block_header(*packet.m_data);
-                
-                // Enhanced diagnostics: Log parsed header fields
-                m_logger->info("[Solo] Received block header:");
-                m_logger->info("[Solo]   - nVersion: {}", block.nVersion);
-                m_logger->info("[Solo]   - nChannel: {}", block.nChannel);
-                m_logger->info("[Solo]   - nHeight: {}", block.nHeight);
-                m_logger->info("[Solo]   - nBits: 0x{:08x}", block.nBits);
-                m_logger->info("[Solo]   - nNonce: {}", block.nNonce);
-                
-                // Phase 2: In stateless mining, we always accept the block from GET_BLOCK response
-                // Update our height tracking to match
-                if (block.nHeight > m_current_height || is_authenticated())
-                {
-                    if (is_authenticated() && block.nHeight != m_current_height) {
-                        m_logger->debug("[Solo Phase 2] Stateless mining - accepting block at height {}", block.nHeight);
-                    }
-                    m_current_height = block.nHeight;  // diagnostic only
-                    
-                    // Verify block handler is set
-                    if (!m_set_block_handler)
-                    {
-                        m_logger->error("[Solo] CRITICAL: No block handler set - cannot process BLOCK_DATA");
-                        m_logger->error("[Solo]   - This indicates an initialization failure");
-                        m_logger->error("[Solo] Recovery: Block will be discarded, requesting new work");
-                        if (connection) {
-                            request_and_queue_get_block(connection,
-                                                        GetBlockReason::VALIDATION_FAILURE,
-                                                        "[Solo] Missing handler recovery GET_BLOCK");
-                        }
-                        return;
-                    }
-                    
-                    // Invoke block handler with nBits from the block
-                    m_logger->debug("[Solo] Dispatching block to handler (height: {}, nBits: 0x{:08x})", 
-                        block.nHeight, block.nBits);
-                    m_set_block_handler(block, block.nBits);
-                }
-                else
-                {
-                    m_logger->warn("[Solo] Block height mismatch detected:");
-                    m_logger->warn("[Solo]   - Received height: {}", block.nHeight);
-                    m_logger->warn("[Solo]   - Current height: {}", m_current_height);
-                    m_logger->info("[Solo] Recovery: Requesting new work at current height");
-                    if (connection) {
-                        if (!request_and_queue_get_block(connection,
-                                                         GetBlockReason::VALIDATION_FAILURE,
-                                                         "[Solo] Height mismatch recovery GET_BLOCK")) {
-                            m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK returned empty payload");
-                        }
-                    }
-                }
+
+        m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
+
+        auto validation_result = m_template_interface->read_template(block_serial, source_endpoint, false);
+
+        if (!validation_result.is_valid) {
+            m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);
+
+            if (validation_result.is_stale) {
+                m_logger->warn("[Solo READ] Template is stale - requesting fresh work");
             }
-            catch (const std::exception& e) {
-                m_logger->error("[Solo] CRITICAL: Failed to deserialize BLOCK_DATA: {}", e.what());
-                m_logger->error("[Solo]   - Payload size: {} bytes", packet.m_data->size());
-                m_logger->error("[Solo]   - This may indicate protocol mismatch or data corruption");
-                m_logger->error("[Solo] Recovery: Requesting new work to recover from deserialization failure");
-                if (connection) {
-                    if (!request_and_queue_get_block(connection,
-                                                     GetBlockReason::VALIDATION_FAILURE,
-                                                     "[Solo] Deserialize recovery GET_BLOCK")) {
-                        m_logger->error("[Solo] CRITICAL: Recovery failed - GET_BLOCK also returned empty payload");
-                    }
-                }
-                return;
-            }
+
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::VALIDATION_FAILURE,
+                                          "[Solo] Validation recovery GET_BLOCK");
+            return;
+        }
+
+        m_logger->info("[Solo READ] Template validated successfully in {} μs",
+            validation_result.validation_time.count());
+        if (!finalize_and_feed_current_template(nUnifiedHeight,
+                                                nChannelHeight,
+                                                "Solo FEED",
+                                                true)) {
+            m_logger->error("[Solo FEED] Recovery: Block will be discarded, requesting new work");
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::TEMPLATE_FEED_FAILURE,
+                                          "[Solo] Template feed recovery GET_BLOCK");
+            return;
         }
 }
 
@@ -2572,7 +2525,10 @@ bool Solo::consume_pending_submit_result_or_warn(const char* opcode_name, Trigge
         reset_get_block_dedup_state();
         m_logger->warn("[Solo] Legacy lane recovery: cleared pending GET_BLOCK; health/recovery monitor will retry");
         if (m_recovery_handler) {
-            m_recovery_handler();
+            // Return value discarded — this is a "kick recovery" signal, not a
+            // chokepoint substitute. There is no direct local GET_BLOCK to skip
+            // in this path; the health/recovery monitor decides what to do next.
+            (void) m_recovery_handler(GetBlockReason::RECOVERY_FORCED);
         }
     }
 
@@ -2693,10 +2649,13 @@ void Solo::on_block_rejected(Packet const& packet, std::shared_ptr<network::Conn
                 }
             }
 
-            // Notify Worker_manager to mark recovery initiated (same pattern as push handler)
+            // Notify Worker_manager to mark recovery initiated (same pattern as push handler).
+            // Return value is intentionally discarded — the rejected-block path below issues
+            // its own GET_BLOCK directly because the dedup state has just been reset and we
+            // need to push the request through promptly to recover the chain tip.
             if (m_recovery_handler) {
                 m_logger->info("[Solo FORK] Recovery initiated (fork_rejection) — notifying Worker_manager");
-                m_recovery_handler();
+                (void) m_recovery_handler(GetBlockReason::RECOVERY_FORCED);
             }
         }
 
@@ -2784,6 +2743,26 @@ void Solo::schedule_recovery_get_block(
 
     const int64_t since_accept_ms = ms_since(m_last_block_accepted_time);
     const int64_t since_push_ms   = ms_since(m_last_push_received_time);
+
+    // Phase C1: PUSH × NEW_ROUND race guard.
+    // A PUSH for ≥ unified_height arrived within the BLOCK_DATA-in-transit
+    // window means the node has already signalled and is about to auto-deliver
+    // a fresh template; scheduling a 2 s recovery GET_BLOCK on top of that is
+    // pure noise.  Note: cancel_recovery_timer() in on_push_notification kills
+    // an *already-scheduled* timer when PUSH arrives second; this guard covers
+    // the inverse race where PUSH arrived first and we are about to schedule
+    // a redundant timer.
+    {
+        auto snap = m_height_tracker.GetSnapshot();
+        if (push_implies_block_data_in_transit(snap, unified_height,
+                                               PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS, now)) {
+            m_logger->info(
+                "[NEW_ROUND] Recovery GET_BLOCK NOT scheduled: PUSH for height ≥ {} arrived "
+                "{}ms ago — BLOCK_DATA is in transit, no recovery needed",
+                unified_height, since_push_ms);
+            return;
+        }
+    }
 
     if (!m_recovery_timer) {
         // No io_context supplied (e.g. unit tests without a timer) — fall back
@@ -2987,19 +2966,33 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
-                        get_channel_name(m_channel));
-                    if (connection) {
-                        if (request_and_queue_get_block(connection,
-                                                        GetBlockReason::GET_ROUND_STALE,
-                                                        "[Solo GET_ROUND] GET_BLOCK")) {
-                            get_block_sent_in_handler = true;
-                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
-                        } else {
-                            m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (staleness path)");
-                        }
+                    // Phase C2: PUSH × NEW_ROUND race guard.  If a PUSH for
+                    // height ≥ unified_height arrived within the BLOCK_DATA
+                    // in-transit window, BLOCK_DATA is already on its way —
+                    // suppress this immediate GET_BLOCK so we don't race a
+                    // duplicate request that the node will rate-limit.
+                    auto snap_push = m_height_tracker.GetSnapshot();
+                    const bool push_in_transit = push_implies_block_data_in_transit(
+                        snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                    if (push_in_transit) {
+                        m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
+                            "(staleness) — GET_BLOCK suppressed: PUSH for height ≥ {} in transit",
+                            get_channel_name(m_channel), unified_height);
                     } else {
-                        m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                        m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
+                            get_channel_name(m_channel));
+                        if (connection) {
+                            if (request_and_queue_get_block(connection,
+                                                            GetBlockReason::GET_ROUND_STALE,
+                                                            "[Solo GET_ROUND] GET_BLOCK")) {
+                                get_block_sent_in_handler = true;
+                                m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                            } else {
+                                m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (staleness path)");
+                            }
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                        }
                     }
                     // No early return (previous early return removed): fall through to
                     // sync_template_state() so any pending template channel-height metadata
@@ -3323,19 +3316,29 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             if (m_template_interface->needs_channel_height_finalization()) {
                 bool is_stale = m_template_interface->check_staleness_by_channel_delta(channel_height);
                 if (is_stale) {
-                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
-                        get_channel_name(m_channel));
-                    if (connection) {
-                        if (request_and_queue_get_block(connection,
-                                                        GetBlockReason::GET_ROUND_STALE,
-                                                        "[Solo GET_ROUND] OLD_ROUND GET_BLOCK")) {
-                            get_block_sent_in_handler = true;
-                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
-                        } else {
-                            m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND staleness path)");
-                        }
+                    // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND mirror).
+                    auto snap_push = m_height_tracker.GetSnapshot();
+                    const bool push_in_transit = push_implies_block_data_in_transit(
+                        snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                    if (push_in_transit) {
+                        m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
+                            "(OLD_ROUND staleness) — GET_BLOCK suppressed: PUSH for height ≥ {} in transit",
+                            get_channel_name(m_channel), unified_height);
                     } else {
-                        m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                        m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced (awaiting finalization → GET_BLOCK)",
+                            get_channel_name(m_channel));
+                        if (connection) {
+                            if (request_and_queue_get_block(connection,
+                                                            GetBlockReason::GET_ROUND_STALE,
+                                                            "[Solo GET_ROUND] OLD_ROUND GET_BLOCK")) {
+                                get_block_sent_in_handler = true;
+                                m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                            } else {
+                                m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND staleness path)");
+                            }
+                        } else {
+                            m_logger->error("[Solo GET_ROUND] Cannot request fresh template - connection is null");
+                        }
                     }
                     // No early return (previous early return removed): fall through to sync_template_state().
                 }
@@ -3362,26 +3365,36 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                                            canonical.canonical_unified_height >= unified_height;
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler && !canonical_already_ahead) {
-                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
-                               "({} channel height unchanged — discarding stale template)",
-                               m_last_round_unified_height, unified_height,
-                               get_channel_name(m_channel));
+                // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND stake mirror).
+                auto snap_push = m_height_tracker.GetSnapshot();
+                const bool push_in_transit = push_implies_block_data_in_transit(
+                    snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                if (push_in_transit) {
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance "
+                                   "unified {} → {} (OLD_ROUND) suppressed — PUSH for height ≥ {} in transit",
+                                   m_last_round_unified_height, unified_height, unified_height);
+                } else {
+                    m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance unified {} → {} "
+                                   "({} channel height unchanged — discarding stale template)",
+                                   m_last_round_unified_height, unified_height,
+                                   get_channel_name(m_channel));
 
-                // Discard template: hashPrevBlock is now stale (different tip)
-                if (m_template_interface && m_template_interface->has_valid_template()) {
-                    m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
-                    m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
-                }
+                    // Discard template: hashPrevBlock is now stale (different tip)
+                    if (m_template_interface && m_template_interface->has_valid_template()) {
+                        m_template_interface->discard_template("Stake/cross-channel tip advance detected via GET_ROUND");
+                        m_logger->info("[Solo GET_ROUND] ✗ Template discarded (Stake-advance stale hashPrevBlock)");
+                    }
 
-                // Reset dedup guard so this GET_BLOCK is not suppressed
-                reset_get_block_dedup_state();
+                    // Reset dedup guard so this GET_BLOCK is not suppressed
+                    reset_get_block_dedup_state();
 
-                if (connection) {
-                    if (request_and_queue_get_block(connection,
-                                                    GetBlockReason::GET_ROUND_NO_TEMPLATE,
-                                                    "[Solo GET_ROUND] OLD_ROUND stake refresh")) {
-                        get_block_sent_in_handler = true;
-                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                    if (connection) {
+                        if (request_and_queue_get_block(connection,
+                                                        GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                        "[Solo GET_ROUND] OLD_ROUND stake refresh")) {
+                            get_block_sent_in_handler = true;
+                            m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK sent for Stake/cross-channel refresh");
+                        }
                     }
                 }
             } else if (unified_advanced && channel_unchanged && canonical_already_ahead) {
@@ -3407,17 +3420,26 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
 
         if (!template_valid && m_template_interface && !get_block_sent_in_handler &&
             !m_pending_get_block.is_pending_for(unified_height)) {
-            m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND → GET_BLOCK");
-            
-            // Request fresh template
-            if (connection) {
-                if (request_and_queue_get_block(connection,
-                                                GetBlockReason::GET_ROUND_NO_TEMPLATE,
-                                                "[Solo GET_ROUND] OLD_ROUND template refresh")) {
-                    get_block_sent_in_handler = true;
-                    m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
-                } else {
-                    m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND template path)");
+            // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND template-invalid path).
+            auto snap_push = m_height_tracker.GetSnapshot();
+            const bool push_in_transit = push_implies_block_data_in_transit(
+                snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+            if (push_in_transit) {
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND — "
+                               "GET_BLOCK suppressed: PUSH for height ≥ {} in transit", unified_height);
+            } else {
+                m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND → GET_BLOCK");
+
+                // Request fresh template
+                if (connection) {
+                    if (request_and_queue_get_block(connection,
+                                                    GetBlockReason::GET_ROUND_NO_TEMPLATE,
+                                                    "[Solo GET_ROUND] OLD_ROUND template refresh")) {
+                        get_block_sent_in_handler = true;
+                        m_logger->info("[Solo GET_ROUND] ✓ GET_BLOCK request sent - waiting for new template...");
+                    } else {
+                        m_logger->debug("[Solo GET_ROUND] GET_BLOCK suppressed by dedup guard (OLD_ROUND template path)");
+                    }
                 }
             }
         }
@@ -4203,10 +4225,17 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
 
 void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::Connection> connection)
 {
-    // Clear in-flight GET_BLOCK state unconditionally — the node has responded.
-    // Even invalid/empty responses mean the pending request has been serviced;
-    // leaving the flag set strands it for up to TIMEOUT_SECONDS, suppressing
-    // legitimate future GET_BLOCK requests from PUSH/GET_ROUND/Health paths.
+    // Phase A2: clear in-flight GET_BLOCK state only AFTER validating the
+    // payload is non-null.  Clearing up-front would let a node spamming
+    // null GET_BLOCK responses reset the in-flight guard on every frame.
+    if (!packet.m_data) {
+        m_logger->error("[Solo GET_BLOCK] Null packet data — empty response");
+        m_pending_get_block.clear();
+        dispatch_recovery_or_fallback(connection,
+                                      GetBlockReason::VALIDATION_FAILURE,
+                                      "[Solo GET_BLOCK] Null-data recovery GET_BLOCK");
+        return;
+    }
     m_pending_get_block.clear();
 
     const bool stateless = packet.m_is_uint16_opcode;
@@ -4243,47 +4272,16 @@ void Solo::on_get_block_template(Packet const& packet, std::shared_ptr<network::
         // delegates the 216-byte block body decode to
         // MiningTemplateInterface::read_stateless_payload().  All canonical mining
         // state (nHeight, nChannel, nBits, hashPrevBlock) comes from the block body.
-        if (!packet.m_data) {
-            m_logger->error("[Solo GET_BLOCK] Null packet data — empty {} response", source_name);
-            m_logger->error("[Solo GET_BLOCK] Recovery: Exiting recovery and retrying GET_BLOCK");
-
-            // Notify Worker_manager to re-initiate recovery (same pattern as BLOCK_DATA)
-            if (m_recovery_handler) {
-                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                  GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo GET_BLOCK] Recovery GET_BLOCK")) {
-                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
-                }
-            }
-            return;
-        }
+        // (Null-data already rejected at the top of this handler.)
         auto decoded = StatelessBlockUtility::decode_template(
             *m_template_interface, *packet.m_data, m_channel, m_logger, false);
 
         if (!decoded.valid) {
             m_logger->error("[Solo GET_BLOCK] Template decode failed: {}", decoded.error_message);
-            m_logger->error("[Solo GET_BLOCK] Recovery: Invalid template — exiting recovery and retrying");
-
-            // Notify Worker_manager to re-initiate recovery
-            if (m_recovery_handler) {
-                m_logger->info("[Solo GET_BLOCK] Invoking recovery handler to retry GET_BLOCK after backoff");
-                m_recovery_handler();
-            }
-
-            // Immediate retry after notifying recovery handler
-            if (connection) {
-                if (!request_and_queue_get_block(connection,
-                                                  GetBlockReason::VALIDATION_FAILURE,
-                                                 "[Solo GET_BLOCK] Decode recovery GET_BLOCK")) {
-                    m_logger->error("[Solo GET_BLOCK] Recovery failed - GET_BLOCK returned empty payload");
-                }
-            }
+            m_logger->error("[Solo GET_BLOCK] Recovery: Delegating to recovery handler");
+            dispatch_recovery_or_fallback(connection,
+                                          GetBlockReason::VALIDATION_FAILURE,
+                                          "[Solo GET_BLOCK] Decode-fail recovery GET_BLOCK");
             return;
         }
 

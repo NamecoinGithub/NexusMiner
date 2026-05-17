@@ -807,7 +807,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_recovery_initiated_handler([&recovery_called](protocol::GetBlockReason) -> bool { recovery_called = true; return true; });
 
         auto template_data = create_mock_template(9001, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
@@ -840,7 +840,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_recovery_initiated_handler([&recovery_called](protocol::GetBlockReason) -> bool { recovery_called = true; return true; });
 
         auto template_data = create_mock_template(9101, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);
@@ -867,7 +867,7 @@ int main()
         solo.set_protocol_lane(ProtocolLane::STATELESS);
 
         bool recovery_called = false;
-        solo.set_recovery_initiated_handler([&recovery_called]() { recovery_called = true; });
+        solo.set_recovery_initiated_handler([&recovery_called](protocol::GetBlockReason) -> bool { recovery_called = true; return true; });
 
         auto template_data = create_mock_template(9201, 0x1d00ffff, 2);
         auto res = solo.get_template_interface()->read_template(template_data, "test_node", false);

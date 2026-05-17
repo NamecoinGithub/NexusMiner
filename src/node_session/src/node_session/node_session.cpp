@@ -546,10 +546,11 @@ void NodeSession::apply_protocol_handlers(LaneSlot slot)
             }
         });
 
-    protocol->set_recovery_initiated_handler([this]() {
+    protocol->set_recovery_initiated_handler([this](protocol::GetBlockReason reason) -> bool {
         if (m_recovery_handler) {
-            m_recovery_handler();
+            return m_recovery_handler(reason);
         }
+        return false;
     });
 
     protocol->set_session_expired_handler([this]() {
