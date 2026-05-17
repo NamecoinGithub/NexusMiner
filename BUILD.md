@@ -87,6 +87,7 @@ NexusMiner provides CMake presets for quick configuration. Use `cmake --preset <
 | `gpu-cuda-prime` | Release with CUDA GPU and PRIME support |
 | `tsan` | Debug build with ThreadSanitizer |
 | `windows-msvc` | Windows build with MSVC (Windows only) |
+| `windows-mingw-cross` | Linux-hosted Windows cross build (MinGW-w64, PRIME enabled) |
 | `macos` | macOS build with dynamic OpenSSL (macOS only) |
 | `riscv` | RISC-V build with hardware acceleration |
 
@@ -110,6 +111,21 @@ This preset enables:
 - OpenSSL built with RISC-V support (detects Zbkb/Zbkc at runtime)
 
 **Note:** ChaCha20Wrapper requires no code changes - OpenSSL automatically routes to hardware Zbkb/Zbkc instructions when available. Falcon and LLP are already portable C/C++ code.
+
+### Linux-hosted Windows Cross Build (MinGW-w64)
+
+Install a MinGW-w64 cross toolchain and dependencies, then run:
+
+```bash
+cmake --preset windows-mingw-cross
+cmake --build --preset windows-mingw-cross
+```
+
+To stage a portable ZIP bundle with configs and checksums:
+
+```bash
+./scripts/package-windows-prime-cpu-cross.sh
+```
 
 ## AMD GPU Build Notes
 
@@ -142,7 +158,7 @@ cmake -DOPENSSL_ROOT_DIR=/usr \
 * **CUDA Toolkit** (optional, for Nvidia GPU mining)
 * **ROCm/HIP** (optional, for AMD GPU mining)
 * **Boost** (optional, required for Prime mining)
-* **GMP** (Linux) or **MPIR** (Windows) (optional, required for Prime mining)
+* **GMP** / **MPIR** (optional, required for Prime mining; toolchain-dependent on Windows)
 
 ## After Building
 
