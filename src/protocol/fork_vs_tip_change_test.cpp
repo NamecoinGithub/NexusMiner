@@ -298,20 +298,18 @@ static void test_push_reasons_bypass_height_dedup()
 }
 
 // ============================================================================
-// Test 13: Recovery/spent-template reasons bypass ALL dedup
+// Test 13: Only RECOVERY reasons bypass ALL dedup
 // ============================================================================
 static void test_recovery_bypasses_all_dedup()
 {
-    std::cout << "\nTest 13: Recovery/spent-template reasons bypass ALL dedup\n";
+    std::cout << "\nTest 13: Only RECOVERY reasons bypass ALL dedup\n";
 
     print_test_result("RECOVERY_FORCED bypasses all dedup",
         should_bypass_all_dedup(GetBlockReason::RECOVERY_FORCED));
     print_test_result("RECOVERY_TIMER bypasses all dedup",
         should_bypass_all_dedup(GetBlockReason::RECOVERY_TIMER));
-    print_test_result("HEALTH_NO_TEMPLATE does NOT bypass all dedup",
-        !should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
-    print_test_result("HEALTH_NO_TEMPLATE bypasses height dedup",
-        should_bypass_height_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("HEALTH_NO_TEMPLATE bypasses all dedup",
+        should_bypass_all_dedup(GetBlockReason::HEALTH_NO_TEMPLATE));
 
     // Non-recovery reasons should NOT bypass all dedup
     print_test_result("INITIAL_REQUEST does NOT bypass all dedup",

@@ -258,17 +258,17 @@ void test_recovery_pending_debounce_idempotent() {
 }
 
 // ============================================================================
-// Test 4: Recovery GET_BLOCK can dispatch after cooldown window — no starvation
-// Simulates the cooldown window expiring between recovery retries.
+// Test 4: Recovery GET_BLOCK can dispatch after debounce window — no starvation
+// Simulates the deduplication window expiring between recovery retries.
 // ============================================================================
 void test_recovery_get_block_no_permanent_starvation() {
-    std::cout << "\nTest 4: Recovery GET_BLOCK dispatches after cooldown expires\n";
+    std::cout << "\nTest 4: Recovery GET_BLOCK dispatches after dedup window expires\n";
 
-    // Simulate GET_BLOCK cooldown logic (mirrors Solo::get_work cooldown guard)
-    const int64_t COOLDOWN_MS = 2000;
+    // Simulate GET_BLOCK deduplication logic (mirrors Solo::get_work dedup guard)
+    const int64_t DEDUP_MS = 100;
     struct GetBlockGate {
         std::chrono::steady_clock::time_point m_last_transmitted{};
-        int64_t cooldown_ms{0};
+        int64_t dedup_ms{0};
 
         // Returns true if GET_BLOCK can be dispatched, false if suppressed
         bool try_dispatch() {
@@ -276,7 +276,7 @@ void test_recovery_get_block_no_permanent_starvation() {
             if (m_last_transmitted != std::chrono::steady_clock::time_point{}) {
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - m_last_transmitted).count();
-                if (elapsed_ms < cooldown_ms) {
+                if (elapsed_ms < dedup_ms) {
                     return false;  // suppressed
                 }
             }
@@ -286,29 +286,29 @@ void test_recovery_get_block_no_permanent_starvation() {
     };
 
     GetBlockGate gate;
-    gate.cooldown_ms = COOLDOWN_MS;
+    gate.dedup_ms = DEDUP_MS;
 
     // First dispatch should succeed
     bool first = gate.try_dispatch();
     print_test_result("First GET_BLOCK dispatch succeeds", first);
 
-    // Immediate second dispatch should be suppressed (within cooldown)
+    // Immediate second dispatch should be suppressed (within 100ms)
     bool second = gate.try_dispatch();
-    print_test_result("Immediate second dispatch suppressed by cooldown", !second);
+    print_test_result("Immediate second dispatch suppressed by dedup window", !second);
 
-    // After cooldown expires, dispatch should succeed again.
-    gate.m_last_transmitted -= std::chrono::milliseconds(COOLDOWN_MS + 10);
+    // After dedup window expires, dispatch should succeed again
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
     bool third = gate.try_dispatch();
-    print_test_result("GET_BLOCK dispatch succeeds after cooldown", third);
+    print_test_result("GET_BLOCK dispatch succeeds after dedup window (110ms wait)", third);
 
     // Another immediate attempt should be suppressed again
     bool fourth = gate.try_dispatch();
     print_test_result("Immediate dispatch after third is suppressed again", !fourth);
 
-    // Recovery timer interval (30s >> 2s cooldown) ensures no starvation
+    // Recovery timer interval (30s >> 100ms dedup) ensures no starvation
     // at normal check_template_health intervals
-    print_test_result("30s timer interval >> 2s cooldown = no starvation at timer cadence",
-                      30000 > COOLDOWN_MS);
+    print_test_result("30s timer interval >> 100ms dedup = no starvation at timer cadence",
+                      30000 > DEDUP_MS * 100);
 }
 
 // ============================================================================
