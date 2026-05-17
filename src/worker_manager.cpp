@@ -93,8 +93,8 @@ namespace {
     // push notification and new BLOCK_DATA template is normal during the propagation
     // window. Set threshold to 5 to avoid false-positive template discards.
     constexpr uint32_t UNIFIED_DRIFT_THRESHOLD = 5;
-    constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 2000;
-    constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 2250;
+    constexpr int64_t FORCED_RETRY_JITTER_MIN_MS = 2100;
+    constexpr int64_t FORCED_RETRY_JITTER_MAX_MS = 2350;
 
 }
 
@@ -2454,7 +2454,7 @@ void Worker_manager::retry_template_request(protocol::GetBlockReason reason)
         auto since_last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_get_block_request_time).count();
         if (since_last_ms < GET_BLOCK_COOLDOWN_MS) {
-            m_logger->debug("[Worker_manager] GET_BLOCK cooldown-suppressed: {}ms since last request "
+            m_logger->info("[Worker_manager] GET_BLOCK cooldown-suppressed: {}ms since last request "
                            "(cooldown={}ms, reason={})", since_last_ms, GET_BLOCK_COOLDOWN_MS, reason_name(reason));
             return;
         }

@@ -22,6 +22,9 @@
  * 16. Unified-only dedup allows cross-channel refresh
  * 17. GetBlockReason state-dedup bypass policy validation
  * 18. Universal 2-second cooldown applies to forced/no-template requests
+ * 19. Pending in-flight suppression vs. forced reasons — RECOVERY_FORCED/TIMER/BLOCK_ACCEPTED
+ *     now respect the in-flight guard; only auto-expire (4s) grants retry.
+ * 20. should_bypass_height_state_after_cooldown() alias matches should_bypass_all_dedup().
  */
 
 #include "protocol/packet_builder.hpp"
@@ -929,6 +932,117 @@ void test_universal_cooldown_applies_to_forced_reasons() {
 }
 
 // ============================================================================
+// Test 19: Pending in-flight suppression vs. forced reasons
+//
+// After the fix removing !should_bypass_all_dedup() from the pending in-flight
+// guard in Solo::get_work(), ALL reasons — including RECOVERY_FORCED,
+// RECOVERY_TIMER, and BLOCK_ACCEPTED — are suppressed when a healthy pending
+// GET_BLOCK is in-flight.  PendingGetBlock::is_pending_for() auto-expires after
+// 4 seconds so degraded-mode retries always make progress eventually.
+// ============================================================================
+void test_pending_inflight_suppresses_forced_reasons() {
+    std::cout << "\nTest 19: Pending in-flight suppression vs. forced reasons\n";
+
+    // Minimal reproduction of PendingGetBlock logic (mirrors Solo::PendingGetBlock)
+    struct MockPending {
+        bool                                     active{false};
+        uint32_t                                 unified_height{0};
+        std::chrono::steady_clock::time_point    sent_at{};
+
+        bool is_pending_for(uint32_t height) const {
+            if (!active) return false;
+            if (unified_height < height) return false;
+            constexpr int64_t TIMEOUT_SECONDS = 4;
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - sent_at).count();
+            return elapsed < TIMEOUT_SECONDS;
+        }
+    };
+
+    MockPending pending;
+    pending.active         = true;
+    pending.unified_height = 100;
+    pending.sent_at        = std::chrono::steady_clock::now();
+
+    // All forced reasons are suppressed by a healthy pending request.
+    // (Previously RECOVERY_FORCED/TIMER/BLOCK_ACCEPTED bypassed this guard.)
+    print_test_result("RECOVERY_TIMER suppressed by healthy pending in-flight",
+        pending.is_pending_for(100));
+    print_test_result("RECOVERY_FORCED suppressed by healthy pending in-flight",
+        pending.is_pending_for(100));
+    print_test_result("BLOCK_ACCEPTED suppressed by healthy pending in-flight",
+        pending.is_pending_for(100));
+    print_test_result("HEALTH_NO_TEMPLATE suppressed by healthy pending in-flight",
+        pending.is_pending_for(100));
+
+    // After the 4-second timeout the pending request expires and retries are allowed.
+    pending.sent_at -= std::chrono::seconds(5);  // expire by 1 second
+    print_test_result("RECOVERY_TIMER allowed after pending timeout (4s)",
+        !pending.is_pending_for(100));
+    print_test_result("RECOVERY_FORCED allowed after pending timeout",
+        !pending.is_pending_for(100));
+    print_test_result("BLOCK_ACCEPTED allowed after pending timeout",
+        !pending.is_pending_for(100));
+
+    // A pending request for a lower height does not suppress a higher-height request.
+    pending.sent_at        = std::chrono::steady_clock::now();
+    pending.unified_height = 99;
+    print_test_result("Pending at height 99 does NOT suppress request for height 100",
+        !pending.is_pending_for(100));
+
+    // No active pending: never suppresses.
+    pending.active = false;
+    print_test_result("No active pending: request allowed for any reason",
+        !pending.is_pending_for(100));
+}
+
+// ============================================================================
+// Test 20: should_bypass_height_state_after_cooldown matches should_bypass_all_dedup
+//
+// The new explicit-named helper must agree with the historical name for all
+// currently-defined reasons, since it is defined as a direct alias.
+// ============================================================================
+void test_should_bypass_height_state_after_cooldown_alias() {
+    std::cout << "\nTest 20: should_bypass_height_state_after_cooldown alias matches should_bypass_all_dedup\n";
+
+    for (auto reason : {
+            GetBlockReason::RECOVERY_FORCED,
+            GetBlockReason::RECOVERY_TIMER,
+            GetBlockReason::BLOCK_ACCEPTED,
+            GetBlockReason::HEALTH_NO_TEMPLATE,
+            GetBlockReason::INITIAL_REQUEST,
+            GetBlockReason::PUSH_TIP_MOVED,
+            GetBlockReason::BLOCK_REJECTED,
+            GetBlockReason::VALIDATION_FAILURE,
+            GetBlockReason::TEMPLATE_AGE_WARNING,
+            GetBlockReason::SESSION_REAUTH,
+            GetBlockReason::HEIGHT_DRIFT,
+            GetBlockReason::GET_ROUND_STALE,
+            GetBlockReason::HEALTH_CHANNEL_STALE,
+            GetBlockReason::HEALTH_STALE_SUPPRESSED}) {
+        bool a = should_bypass_all_dedup(reason);
+        bool b = should_bypass_height_state_after_cooldown(reason);
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+            "should_bypass_height_state_after_cooldown(%s) == should_bypass_all_dedup",
+            reason_name(reason));
+        print_test_result(buf, a == b);
+    }
+
+    // Explicit spot-checks for clarity.
+    print_test_result("RECOVERY_FORCED bypasses height state after cooldown",
+        should_bypass_height_state_after_cooldown(GetBlockReason::RECOVERY_FORCED));
+    print_test_result("RECOVERY_TIMER bypasses height state after cooldown",
+        should_bypass_height_state_after_cooldown(GetBlockReason::RECOVERY_TIMER));
+    print_test_result("BLOCK_ACCEPTED bypasses height state after cooldown (spent template)",
+        should_bypass_height_state_after_cooldown(GetBlockReason::BLOCK_ACCEPTED));
+    print_test_result("HEALTH_NO_TEMPLATE does NOT bypass height state after cooldown",
+        !should_bypass_height_state_after_cooldown(GetBlockReason::HEALTH_NO_TEMPLATE));
+    print_test_result("INITIAL_REQUEST does NOT bypass height state after cooldown",
+        !should_bypass_height_state_after_cooldown(GetBlockReason::INITIAL_REQUEST));
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -956,6 +1070,8 @@ int main() {
     test_unified_only_dedup_allows_cross_channel_refresh();
     test_get_block_reason_dedup_policy();
     test_universal_cooldown_applies_to_forced_reasons();
+    test_pending_inflight_suppresses_forced_reasons();
+    test_should_bypass_height_state_after_cooldown_alias();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

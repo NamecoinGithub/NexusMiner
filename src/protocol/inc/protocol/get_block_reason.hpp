@@ -66,6 +66,11 @@ enum class GetBlockReason : uint8_t {
 /// the universal 2-second miner cooldown has passed.  Kept under the historical
 /// name because several call sites use it for "force past stale state" policy;
 /// it no longer bypasses the cooldown guard.
+///
+/// NOTE: This function is for the *height/template-state* dedup guard only.
+/// The pending in-flight guard (PendingGetBlock::is_pending_for) is NOT bypassed
+/// by reason alone — it relies on the 4-second auto-expiry timeout to allow retries.
+/// Use should_bypass_height_state_after_cooldown() for the explicitly-named equivalent.
 inline bool should_bypass_all_dedup(GetBlockReason reason)
 {
     switch (reason) {
@@ -80,6 +85,16 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
         default:
             return false;
     }
+}
+
+/// Explicit alias for should_bypass_all_dedup() with a name that clearly describes
+/// its scope: bypasses the height/template-state guard in GetBlockDedupGuard after
+/// the 2-second cooldown passes.  Does NOT grant any special treatment for the
+/// pending in-flight guard — pending suppression is gated by PendingGetBlock's
+/// 4-second auto-expiry, not by reason.
+inline bool should_bypass_height_state_after_cooldown(GetBlockReason reason)
+{
+    return should_bypass_all_dedup(reason);
 }
 
 /// Returns true when the reason should bypass the height-based dedup guard

@@ -34,13 +34,16 @@ jobs:
       - name: Configure CMake
         # This workflow intentionally provisions GMP; CMake uses MPIR when present,
         # otherwise it falls back to GMP for PRIME bigint linkage.
+        # GMPDIR must be an *environment* variable — FindGMP.cmake consumes $ENV{GMPDIR},
+        # not a CMake cache variable.  Set it here so the find_path/find_library hints work.
+        env:
+          GMPDIR: "${{ github.workspace }}/vcpkg/installed/x64-windows"
         run: >
           cmake --preset windows-msvc
           -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
           -DWITH_PRIME=ON
           -DNEXUSMINER_STATIC_OPENSSL=OFF
-          -DGMPDIR="${{ github.workspace }}/vcpkg/installed/x64-windows"
 
       - name: Build
         run: cmake --build --preset windows-msvc
@@ -55,7 +58,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$stage\configs" | Out-Null
           Copy-Item "${{ github.workspace }}\build\windows-msvc\Release\NexusMiner.exe" "$stage\NexusMiner.exe" -Force
           Copy-Item "${{ github.workspace }}\README.md" "$stage\README.md" -Force
-          Copy-Item "${{ github.workspace }}\configs\*.config" "$stage\configs\" -Force
+          # Copy both *.config and *.conf; silently skip whichever glob is empty.
+          foreach ($pat in @("*.config", "*.conf")) {
+            Get-ChildItem "${{ github.workspace }}\configs\$pat" -ErrorAction SilentlyContinue |
+              ForEach-Object { Copy-Item $_.FullName "$stage\configs\" -Force }
+          }
 
           $dllCandidates = @(
             "${{ github.workspace }}\vcpkg\installed\x64-windows\bin\libcrypto-3-x64.dll",
@@ -69,7 +76,9 @@ jobs:
           }
 
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          # Compress the stage directory itself (not its contents) so the ZIP contains
+          # a top-level NexusMiner-windows/ folder, matching the MinGW cross-package layout.
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
           $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
           "$hash  NexusMiner-windows-msvc.zip" | Out-File -FilePath $sha -Encoding ascii
 

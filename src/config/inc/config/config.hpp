@@ -91,7 +91,11 @@ public:
 		return (m_port == ProtocolPorts::STATELESS_PORT) ? ProtocolPorts::LEGACY_PORT : ProtocolPorts::STATELESS_PORT;
 	}
 
-	// GET_BLOCK miner-side cooldown (milliseconds, default 2000)
+	// GET_BLOCK miner-side interval (milliseconds, default 2000).
+	// NOTE: this value is parsed from config and stored, but is not currently wired
+	// to the runtime cooldown guards (GetBlockDedupGuard::COOLDOWN_WINDOW_MS and
+	// Worker_manager GET_BLOCK_COOLDOWN_MS remain hard-coded at 2000ms).
+	// Operator-configured values are ignored until the wiring is completed.
 	uint32_t get_get_block_interval_ms() const { return m_get_block_interval_ms; }
 
 	// Colin AI diagnostic agent

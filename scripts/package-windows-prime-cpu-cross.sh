@@ -26,7 +26,10 @@ fi
 
 cp "${EXE_PATH}" "${STAGE_DIR}/NexusMiner.exe"
 cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
-cp "${ROOT_DIR}"/configs/*.config "${STAGE_DIR}/configs/"
+# Copy both *.config and *.conf; silently skip whichever glob has no matches.
+for conf_file in "${ROOT_DIR}"/configs/*.config "${ROOT_DIR}"/configs/*.conf; do
+    [ -e "${conf_file}" ] && cp "${conf_file}" "${STAGE_DIR}/configs/"
+done
 
 copy_if_exists() {
     local source_path="$1"

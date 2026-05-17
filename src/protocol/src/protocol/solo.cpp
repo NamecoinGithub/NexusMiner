@@ -1530,19 +1530,25 @@ network::Shared_payload Solo::get_work(GetBlockReason reason)
     // ── Pending GET_BLOCK in-flight guard ───────────────────────────────────
     // If a GET_BLOCK is already in-flight for the same-or-higher unified height,
     // suppress this request to prevent two concurrent responses triggering
-    // duplicate worker feeds (the "Double Feed" race).  Recovery reasons that
-    // bypass all dedup are exempt so degraded-mode retries always make progress.
+    // duplicate worker feeds (the "Double Feed" race).
+    //
+    // All reasons — including RECOVERY_FORCED, RECOVERY_TIMER, and BLOCK_ACCEPTED —
+    // respect this guard.  The pending timeout (PendingGetBlock::TIMEOUT_SECONDS = 4s)
+    // ensures that degraded-mode retries make progress: is_pending_for() returns false
+    // (and stops suppressing) once the pending request has not been answered within 4s.
+    // This prevents firing a second GET_BLOCK at the 2–4s window when both the 2s
+    // cooldown has expired and a healthy pending request is still in flight.
     {
         auto snap = m_height_tracker.GetSnapshot();
         uint32_t canonical_unified = snap.canonical_unified_height;
-        if (!should_bypass_all_dedup(reason) &&
-            m_pending_get_block.is_pending_for(canonical_unified)) {
+        if (m_pending_get_block.is_pending_for(canonical_unified)) {
             m_last_get_block_request_status.store(GetBlockRequestStatus::DUPLICATE_WINDOW);
             m_logger->debug("[Solo] GET_BLOCK suppressed: already in-flight for height {} "
-                           "(pending reason={}, new reason={})",
+                           "(pending reason={}, new reason={}, pending_elapsed_ms={})",
                            m_pending_get_block.unified_height,
                            reason_name(m_pending_get_block.reason),
-                           reason_name(reason));
+                           reason_name(reason),
+                           m_pending_get_block.elapsed_ms());
             return nullptr;
         }
     }
