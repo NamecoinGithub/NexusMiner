@@ -884,6 +884,109 @@ void test_get_block_reason_dedup_policy() {
 }
 
 // ============================================================================
+// Test 18: Worker_manager recovery handler routes soft vs hard reasons correctly
+// ============================================================================
+namespace {
+struct RecoveryHandlerHarness {
+    enum class Phase : uint8_t { HEALTHY, WAITING_TEMPLATE };
+
+    Phase phase{Phase::HEALTHY};
+    uint64_t recovery_epoch{0};
+    int mark_calls{0};
+    int retry_calls{0};
+    std::string marked_reason;
+
+    void mark_recovery_initiated(const char* reason)
+    {
+        ++mark_calls;
+        marked_reason = reason ? reason : "";
+        if (phase == Phase::HEALTHY) {
+            phase = Phase::WAITING_TEMPLATE;
+            ++recovery_epoch;
+        }
+    }
+
+    bool retry_template_request_returning(GetBlockReason)
+    {
+        ++retry_calls;
+        return true;
+    }
+
+    bool invoke(GetBlockReason reason)
+    {
+        if (should_initiate_recovery_epoch(reason)) {
+            mark_recovery_initiated(reason_name(reason));
+        }
+        return retry_template_request_returning(reason);
+    }
+};
+} // namespace
+
+void test_recovery_handler_reason_routing() {
+    std::cout << "\nTest 18: Recovery handler reason-aware epoch routing" << std::endl;
+
+    RecoveryHandlerHarness soft_feed;
+    bool soft_feed_sent = soft_feed.invoke(GetBlockReason::TEMPLATE_FEED_FAILURE);
+    print_test_result("TEMPLATE_FEED_FAILURE remains a soft retry", soft_feed_sent);
+    print_test_result("TEMPLATE_FEED_FAILURE does not mark recovery initiated",
+        soft_feed.mark_calls == 0);
+    print_test_result("TEMPLATE_FEED_FAILURE leaves phase HEALTHY",
+        soft_feed.phase == RecoveryHandlerHarness::Phase::HEALTHY);
+    print_test_result("TEMPLATE_FEED_FAILURE leaves recovery epoch unchanged",
+        soft_feed.recovery_epoch == 0);
+    print_test_result("TEMPLATE_FEED_FAILURE still retries GET_BLOCK once",
+        soft_feed.retry_calls == 1);
+
+    RecoveryHandlerHarness soft_validation;
+    bool soft_validation_sent = soft_validation.invoke(GetBlockReason::VALIDATION_FAILURE);
+    print_test_result("VALIDATION_FAILURE remains a soft retry", soft_validation_sent);
+    print_test_result("VALIDATION_FAILURE does not mark recovery initiated",
+        soft_validation.mark_calls == 0);
+    print_test_result("VALIDATION_FAILURE leaves phase HEALTHY",
+        soft_validation.phase == RecoveryHandlerHarness::Phase::HEALTHY);
+    print_test_result("VALIDATION_FAILURE leaves recovery epoch unchanged",
+        soft_validation.recovery_epoch == 0);
+    print_test_result("VALIDATION_FAILURE still retries GET_BLOCK once",
+        soft_validation.retry_calls == 1);
+
+    RecoveryHandlerHarness hard_forced;
+    bool hard_forced_sent = hard_forced.invoke(GetBlockReason::RECOVERY_FORCED);
+    print_test_result("RECOVERY_FORCED schedules a retry", hard_forced_sent);
+    print_test_result("RECOVERY_FORCED marks recovery initiated",
+        hard_forced.mark_calls == 1);
+    print_test_result("RECOVERY_FORCED advances to WAITING_TEMPLATE",
+        hard_forced.phase == RecoveryHandlerHarness::Phase::WAITING_TEMPLATE);
+    print_test_result("RECOVERY_FORCED advances recovery epoch",
+        hard_forced.recovery_epoch == 1);
+    print_test_result("RECOVERY_FORCED uses the reason-derived telemetry label",
+        hard_forced.marked_reason == "recovery_forced");
+    print_test_result("RECOVERY_FORCED still retries GET_BLOCK once",
+        hard_forced.retry_calls == 1);
+
+    RecoveryHandlerHarness hard_stale;
+    hard_stale.invoke(GetBlockReason::GET_ROUND_STALE);
+    print_test_result("GET_ROUND_STALE marks recovery initiated",
+        hard_stale.mark_calls == 1);
+    print_test_result("GET_ROUND_STALE uses the reason-derived telemetry label",
+        hard_stale.marked_reason == "get_round_stale");
+    print_test_result("GET_ROUND_STALE advances recovery epoch",
+        hard_stale.recovery_epoch == 1);
+    print_test_result("GET_ROUND_STALE retries GET_BLOCK once",
+        hard_stale.retry_calls == 1);
+
+    RecoveryHandlerHarness hard_no_template;
+    hard_no_template.invoke(GetBlockReason::GET_ROUND_NO_TEMPLATE);
+    print_test_result("GET_ROUND_NO_TEMPLATE marks recovery initiated",
+        hard_no_template.mark_calls == 1);
+    print_test_result("GET_ROUND_NO_TEMPLATE uses the reason-derived telemetry label",
+        hard_no_template.marked_reason == "get_round_no_template");
+    print_test_result("GET_ROUND_NO_TEMPLATE advances recovery epoch",
+        hard_no_template.recovery_epoch == 1);
+    print_test_result("GET_ROUND_NO_TEMPLATE retries GET_BLOCK once",
+        hard_no_template.retry_calls == 1);
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 int main() {
@@ -910,6 +1013,7 @@ int main() {
     test_cross_channel_unified_advance_resets_dedup();
     test_unified_only_dedup_allows_cross_channel_refresh();
     test_get_block_reason_dedup_policy();
+    test_recovery_handler_reason_routing();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

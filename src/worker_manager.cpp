@@ -675,7 +675,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* which withholds submissions while the replacement template is fetched.    */
         m_primary_node_session->set_recovery_initiated_handler(
             [this](protocol::GetBlockReason reason) -> bool {
-                mark_recovery_initiated("push_staleness");
+                if (protocol::should_initiate_recovery_epoch(reason)) {
+                    mark_recovery_initiated(protocol::reason_name(reason));
+                } else {
+                    m_logger->debug("[Worker_manager] Recovery handler invoked with soft reason {} — "
+                                    "issuing GET_BLOCK retry without epoch transition",
+                                    protocol::reason_name(reason));
+                }
                 // Workers keep running while we request fresh work/GET_BLOCK.
                 // Return value: true iff a GET_BLOCK was transmitted on the wire.
                 // Solo uses this to decide whether to issue a local fallback request
