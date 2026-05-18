@@ -61,10 +61,61 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
                                        GetBlockReason reason,
                                        const char* context)
 {
+    const auto snap = m_height_tracker.GetSnapshot();
+    uint32_t template_target = 0;
+    if (m_template_interface) {
+        if (auto const* tmpl = m_template_interface->get_current_template()) {
+            template_target = tmpl->block.nHeight;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const int64_t since_last_block_data_ms =
+        (m_last_template_adopted_at == std::chrono::steady_clock::time_point::min())
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now - m_last_template_adopted_at).count();
+
+    m_logger->info(
+        "[Solo GET_BLOCK SOURCE] reason={} context=\"{}\" template_target={} canonical_unified={} "
+        "pending_for={} since_last_block_data_ms={} caller_stack=\"{}\"",
+        reason_name(reason),
+        context ? context : "(none)",
+        template_target,
+        snap.canonical_unified_height,
+        m_pending_get_block.unified_height,
+        since_last_block_data_ms,
+        context ? context : "(none)");
+
     auto payload = get_work(reason);
     if (!payload || payload->empty()) {
         return false;
     }
+
+    auto reason_bypasses_post_adoption = [](GetBlockReason r) {
+        return should_bypass_all_dedup(r) ||
+               r == GetBlockReason::BLOCK_REJECTED ||
+               r == GetBlockReason::SESSION_REAUTH ||
+               r == GetBlockReason::INITIAL_REQUEST;
+    };
+
+    if (m_last_template_adopted_at != std::chrono::steady_clock::time_point::min() &&
+        !reason_bypasses_post_adoption(reason))
+    {
+        const auto since_adopt = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_last_template_adopted_at);
+        if (since_adopt < POST_ADOPTION_SUPPRESSION_WINDOW)
+        {
+            m_logger->info(
+                "[Solo GET_BLOCK] Suppressed: template adopted {}ms ago (window {}ms) "
+                "— redundant request from reason={} context={}",
+                since_adopt.count(),
+                POST_ADOPTION_SUPPRESSION_WINDOW.count(),
+                reason_name(reason),
+                context ? context : "(none)");
+            return false;
+        }
+    }
+
     if (!queue_payload(connection, payload, context)) {
         return false;
     }
@@ -1065,6 +1116,7 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     if (!m_template_interface->feed_current_template()) {
         m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
     } else {
+        m_last_template_adopted_at = std::chrono::steady_clock::now();
         // Record successful feed for the unified-height guard.
         m_last_fed_unified_height = unified_height;
         m_last_fed_hash_prev_block = tmpl->block.hashPrevBlock;
@@ -2755,7 +2807,7 @@ void Solo::schedule_recovery_get_block(
     {
         auto snap = m_height_tracker.GetSnapshot();
         if (push_implies_block_data_in_transit(snap, unified_height,
-                                               PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS, now)) {
+                                               push_in_transit_guard_for_channel().count(), now)) {
             m_logger->info(
                 "[NEW_ROUND] Recovery GET_BLOCK NOT scheduled: PUSH for height ≥ {} arrived "
                 "{}ms ago — BLOCK_DATA is in transit, no recovery needed",
@@ -2973,7 +3025,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     // duplicate request that the node will rate-limit.
                     auto snap_push = m_height_tracker.GetSnapshot();
                     const bool push_in_transit = push_implies_block_data_in_transit(
-                        snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                        snap_push, unified_height, push_in_transit_guard_for_channel().count());
                     if (push_in_transit) {
                         m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
                             "(staleness) — GET_BLOCK suppressed: PUSH for height ≥ {} in transit",
@@ -3045,7 +3097,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                                            canonical.canonical_unified_height >= unified_height;
             auto snap = m_height_tracker.GetSnapshot();
             bool recent_push_for_this_height = push_implies_block_data_in_transit(
-                snap, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                snap, unified_height, push_in_transit_guard_for_channel().count());
 
             if (unified_advanced && channel_unchanged && !get_block_sent_in_handler
                 && !canonical_already_ahead && !recent_push_for_this_height) {
@@ -3082,7 +3134,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                                "unified {} → {} suppressed — PUSH received within {}ms for height {} ≥ {}, "
                                "BLOCK_DATA in transit",
                                m_last_round_unified_height, unified_height,
-                               PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS,
+                               push_in_transit_guard_for_channel().count(),
                                snap.push_unified_height, unified_height);
             }
         }
@@ -3319,7 +3371,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                     // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND mirror).
                     auto snap_push = m_height_tracker.GetSnapshot();
                     const bool push_in_transit = push_implies_block_data_in_transit(
-                        snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                        snap_push, unified_height, push_in_transit_guard_for_channel().count());
                     if (push_in_transit) {
                         m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
                             "(OLD_ROUND staleness) — GET_BLOCK suppressed: PUSH for height ≥ {} in transit",
@@ -3368,7 +3420,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
                 // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND stake mirror).
                 auto snap_push = m_height_tracker.GetSnapshot();
                 const bool push_in_transit = push_implies_block_data_in_transit(
-                    snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                    snap_push, unified_height, push_in_transit_guard_for_channel().count());
                 if (push_in_transit) {
                     m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: Stake/cross-channel advance "
                                    "unified {} → {} (OLD_ROUND) suppressed — PUSH for height ≥ {} in transit",
@@ -3423,7 +3475,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
             // Phase C2: PUSH × NEW_ROUND race guard (OLD_ROUND template-invalid path).
             auto snap_push = m_height_tracker.GetSnapshot();
             const bool push_in_transit = push_implies_block_data_in_transit(
-                snap_push, unified_height, PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS);
+                snap_push, unified_height, push_in_transit_guard_for_channel().count());
             if (push_in_transit) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: template invalidated on OLD_ROUND — "
                                "GET_BLOCK suppressed: PUSH for height ≥ {} in transit", unified_height);
@@ -5655,6 +5707,14 @@ bool Solo::should_poll_get_round()
     m_last_get_round_time = now;
     m_logger->debug("[Solo Poll] GET_ROUND sanity-check poll (interval {}ms)", m_current_poll_interval_ms);
     return true;
+}
+
+std::chrono::milliseconds Solo::push_in_transit_guard_for_channel() const
+{
+    if (m_channel == mining::CHANNEL_PRIME) {
+        return std::chrono::milliseconds(PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_PRIME_MS);
+    }
+    return std::chrono::milliseconds(PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_HASH_MS);
 }
 
 void Solo::arm_get_round_fallback(int64_t push_silent_seconds)

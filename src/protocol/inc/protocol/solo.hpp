@@ -136,12 +136,11 @@ public:
     // the GET_ROUND fallback arms BEFORE the 600s emergency timeout fires.
     static constexpr int64_t PUSH_ABSENT_FOR_GET_ROUND_FALLBACK_SECONDS = 480;
     /// Guard window (ms) during which a received BLOCK_AVAILABLE push implies BLOCK_DATA
-    /// is already in transit from the node. The GET_ROUND Stake/cross-channel advance
-    /// path suppresses GET_BLOCK when a push for the same unified height was received
-    /// within this window, preventing a double-template burst on Legacy lane.
-    /// 3 000 ms is safely above observed node→miner BLOCK_DATA delivery latency and
-    /// well below the 20 000 ms GET_ROUND poll interval.
-    static constexpr int64_t PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS = 3000;
+    /// is already in transit from the node. Prime-channel traces show PUSH→BLOCK_DATA
+    /// delivery jitter up to ~4.7s in production, so Prime uses 6000ms while Hash keeps
+    /// the previous 3000ms guard.
+    static constexpr int64_t PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_PRIME_MS = 6000;
+    static constexpr int64_t PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_HASH_MS  = 3000;
     /// Send GET_BLOCK on all lanes (legacy: 0x81; stateless: 0xD081) to request
     /// a fresh mining template.  Authentication-guarded; delegates to get_work().
     /// Returns null/empty if not yet authenticated — callers must guard for this.
@@ -649,6 +648,12 @@ private:
     // m_recovery_deferred_at: set when the timer is scheduled; cleared on fire or
     //   cancel.  sentinel = time_point::min() (not scheduled).
     static constexpr auto kRecoveryDebounceWindow = std::chrono::seconds(2);
+    // Time at which the most recent BLOCK_DATA template was successfully adopted.
+    // Used to suppress redundant GET_BLOCK requests from polling races immediately
+    // after a fresh template was already fed to workers.
+    std::chrono::steady_clock::time_point m_last_template_adopted_at{
+        std::chrono::steady_clock::time_point::min()};
+    static constexpr auto POST_ADOPTION_SUPPRESSION_WINDOW = std::chrono::milliseconds(2500);
     std::shared_ptr<asio::io_context> m_io_context;
     std::unique_ptr<asio::steady_timer> m_recovery_timer;
     std::chrono::steady_clock::time_point m_last_block_accepted_time{
@@ -844,6 +849,7 @@ private:
     
     // Helper methods for intelligent polling
     bool should_poll_get_round();
+    std::chrono::milliseconds push_in_transit_guard_for_channel() const;
     void arm_get_round_fallback(int64_t push_silent_seconds);
     void disarm_get_round_fallback(const char* reason, int64_t push_age_seconds = -1);
     void on_new_round_received(uint32_t new_unified_height);
@@ -938,6 +944,8 @@ private:
         }
     };
     PendingGetBlock m_pending_get_block;
+
+    friend struct PostAdoptionSuppressionHarness;
 
 public:
     /// Mark a GET_BLOCK request as successfully transmitted using the current
