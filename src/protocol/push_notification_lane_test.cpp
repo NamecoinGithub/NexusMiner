@@ -91,7 +91,7 @@ bool push_implies_block_data_in_transit_test(
     if (!has_push) return false;
     if (push_unified_height < check_unified_height) return false;
     return push_age_ms >= 0 &&
-           push_age_ms < protocol::Solo::PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_MS;
+           push_age_ms < protocol::Solo::PUSH_BLOCK_DATA_IN_TRANSIT_GUARD_HASH_MS;
 }
 
 std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d00ffff,
