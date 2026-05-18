@@ -148,6 +148,21 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
     }
 }
 
+/// Returns true when a recovery reason should promote Worker_manager into a new
+/// recovery epoch (HEALTHY -> WAITING_TEMPLATE) instead of remaining a soft,
+/// self-healing GET_BLOCK retry.
+inline bool should_initiate_recovery_epoch(GetBlockReason reason)
+{
+    switch (reason) {
+        case GetBlockReason::RECOVERY_FORCED:
+        case GetBlockReason::GET_ROUND_STALE:
+        case GetBlockReason::GET_ROUND_NO_TEMPLATE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /// Human-readable name for logging.
 inline const char* reason_name(GetBlockReason reason)
 {
