@@ -237,9 +237,17 @@ public:
     void mark_authoritative_recovery_healthy(const std::string& reason = "");
 
     // Recovery callback: called by the push handler when a channel-stale recovery GET_BLOCK
-    // is triggered (is_template_stale() is true at request_work_fn invocation time).
-    // Worker_manager registers this to set its recovery_pending flag for doom-loop prevention.
-    using Recovery_handler = std::function<void()>;
+    // is triggered (is_template_stale() is true at request_work_fn invocation time),
+    // and by deserialize/validation failure paths in on_block_data / on_get_block_template.
+    //
+    // The handler MUST return true iff it successfully scheduled / transmitted a fresh
+    // GET_BLOCK request.  Solo uses the return value as the single chokepoint signal:
+    // if the handler succeeded, Solo will NOT also issue its own local
+    // request_and_queue_get_block (preventing the "double-tap" storm where one failure
+    // event fires two concurrent GET_BLOCKs — see fix for PR #698 regression).
+    //
+    // A void-returning legacy handler can be wired with a lambda that returns true.
+    using Recovery_handler = std::function<bool(protocol::GetBlockReason)>;
     void set_recovery_initiated_handler(Recovery_handler h) { m_recovery_handler = std::move(h); }
 
     // Session-expired callback: called when a KEEPALIVE ACK session_id mismatch is detected.
@@ -948,6 +956,23 @@ private:
     bool request_and_queue_get_block(const std::shared_ptr<network::Connection>& connection,
                                      GetBlockReason reason,
                                      const char* context);
+
+    // Single chokepoint used by failure-recovery paths in on_block_data,
+    // on_get_block_template, on_block_rejected (fork), and stray-result
+    // recovery.  Delegates to m_recovery_handler when registered (the normal
+    // production path through Worker_manager::retry_template_request, which
+    // applies the 500 ms burst guard, hashprev backoff, auth/session/in-flight
+    // gates, and rate accounting).  Only if no handler is wired (e.g. unit
+    // tests, or NodeSession-less mode) does it fall back to a direct local
+    // request_and_queue_get_block.
+    //
+    // This prevents the "double tap" storm where the same failure event used
+    // to both call m_recovery_handler() AND immediately call
+    // request_and_queue_get_block() — racing two concurrent GET_BLOCKs through
+    // partially-disjoint dedup guards.
+    void dispatch_recovery_or_fallback(const std::shared_ptr<network::Connection>& connection,
+                                       GetBlockReason reason,
+                                       const char* fallback_context);
     
     // ═══════════════════════════════════════════════════════════════════════
     // PROTOCOL LANE DETERMINATION

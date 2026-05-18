@@ -78,9 +78,15 @@ public:
                                                       uint32_t channel, uint64_t nonce)>;
 
     /**
-     * @brief Recovery handler (called when template staleness is detected)
+     * @brief Recovery handler (called when template staleness is detected or
+     *        BLOCK_DATA / GET_BLOCK response deserialization fails).
+     *
+     * The handler MUST return true iff it successfully scheduled / transmitted
+     * a fresh GET_BLOCK request.  Solo uses the return value as a chokepoint
+     * signal: when true, Solo will NOT also issue its own local recovery
+     * GET_BLOCK (prevents the "double-tap" storm).
      */
-    using Recovery_handler = std::function<void()>;
+    using Recovery_handler = std::function<bool(protocol::GetBlockReason)>;
 
     /**
      * @brief Session expired handler (called when session mismatch is detected)

@@ -145,6 +145,10 @@ private:
      *               or reconnect.
      */
     void retry_template_request(protocol::GetBlockReason reason);
+    /// Same as retry_template_request() but returns true iff a GET_BLOCK was
+    /// actually transmitted on the wire — used by the Solo recovery-handler
+    /// chokepoint so Solo knows whether to issue a local fallback.
+    bool retry_template_request_returning(protocol::GetBlockReason reason);
     void restart_recovery_window(const char* reason);
 
     /// Mark that a hard GET_BLOCK recovery is now in progress.
