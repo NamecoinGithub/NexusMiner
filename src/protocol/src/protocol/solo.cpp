@@ -75,6 +75,7 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
             : std::chrono::duration_cast<std::chrono::milliseconds>(
                   now - m_last_template_adopted_at).count();
 
+    const char* caller_stack = context ? context : "(none)";
     m_logger->info(
         "[Solo GET_BLOCK SOURCE] reason={} context=\"{}\" template_target={} canonical_unified={} "
         "pending_for={} since_last_block_data_ms={} caller_stack=\"{}\"",
@@ -84,14 +85,14 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
         snap.canonical_unified_height,
         m_pending_get_block.unified_height,
         since_last_block_data_ms,
-        context ? context : "(none)");
+        caller_stack);
 
     auto payload = get_work(reason);
     if (!payload || payload->empty()) {
         return false;
     }
 
-    auto reason_bypasses_post_adoption = [](GetBlockReason r) {
+    auto reasons_bypass_post_adoption = [](GetBlockReason r) {
         return should_bypass_all_dedup(r) ||
                r == GetBlockReason::BLOCK_REJECTED ||
                r == GetBlockReason::SESSION_REAUTH ||
@@ -99,7 +100,7 @@ bool Solo::request_and_queue_get_block(const std::shared_ptr<network::Connection
     };
 
     if (m_last_template_adopted_at != std::chrono::steady_clock::time_point::min() &&
-        !reason_bypasses_post_adoption(reason))
+        !reasons_bypass_post_adoption(reason))
     {
         const auto since_adopt = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - m_last_template_adopted_at);

@@ -104,6 +104,8 @@ namespace {
 std::unique_ptr<Solo> make_solo()
 {
     auto io = std::make_shared<asio::io_context>();
+    // Session context/stats are intentionally null here: this test targets the
+    // request_and_queue_get_block chokepoint logic in isolation.
     auto solo = std::make_unique<Solo>(static_cast<uint8_t>(mining::CHANNEL_PRIME), nullptr, nullptr, io);
     solo->set_protocol_lane(ProtocolLane::STATELESS);
     PostAdoptionSuppressionHarness::set_authenticated(*solo, true);
