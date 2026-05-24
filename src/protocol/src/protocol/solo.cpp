@@ -362,7 +362,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     if (!m_logger) {
         m_logger = spdlog::default_logger();
     }
-    // Initialise the 2s recovery-debounce timer when an io_context is available.
+    // Initialise the 5s recovery-debounce timer when an io_context is available.
     // Without one (test environments that only pass 3 args), the timer is null and
     // on_get_round_response falls back to the legacy immediate-GET_BLOCK behaviour.
     if (m_io_context) {
@@ -2841,7 +2841,7 @@ void Solo::schedule_recovery_get_block(
     m_recovery_deferred_at = now;
 
     // Cancel any prior pending recovery — coalesce rapid NEW_ROUND bursts so that
-    // only the LAST NEW_ROUND in a burst starts the 2s countdown.
+    // only the LAST NEW_ROUND in a burst starts the 5s countdown.
     m_recovery_timer->cancel();
     m_recovery_timer->expires_after(kRecoveryDebounceWindow);
     m_recovery_timer->async_wait(
@@ -2856,7 +2856,7 @@ void Solo::schedule_recovery_get_block(
                 m_logger->warn("[NEW_ROUND] Recovery timer error: {}", ec.message());
                 return;
             }
-            // 2 seconds elapsed — did a template arrive in the meantime?
+            // 5 seconds elapsed — did a template arrive in the meantime?
             if (m_template_interface && m_template_interface->has_valid_template()) {
                 m_logger->info(
                     "[NEW_ROUND] Recovery NOT fired: template installed during {}ms debounce",
@@ -2878,7 +2878,7 @@ void Solo::schedule_recovery_get_block(
             if (active_conn) {
                 request_and_queue_get_block(active_conn,
                                             GetBlockReason::GET_ROUND_NO_TEMPLATE,
-                                            "[Solo GET_ROUND] Recovery GET_BLOCK (2s debounce)");
+                                            "[Solo GET_ROUND] Recovery GET_BLOCK (5s debounce)");
             } else {
                 m_logger->warn("[NEW_ROUND] Recovery GET_BLOCK: no connection available after debounce");
             }
@@ -3166,7 +3166,7 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         }
 
         // CRITICAL FIX: After NEW_ROUND, check if we have a valid template
-        // If not, defer a recovery GET_BLOCK by 2s so that the BLOCK_DATA push that
+        // If not, defer a recovery GET_BLOCK by 5s so that the BLOCK_DATA push that
         // the node almost always sends within ~50ms has a chance to arrive first.
         // Skip if a GET_BLOCK was already sent in this handler (staleness check above)
         // — the in-flight response will provide the replacement template.
@@ -3193,11 +3193,11 @@ void Solo::on_get_round_response(Packet const& packet, std::shared_ptr<network::
         if (needs_template && !get_block_sent_in_handler && !get_block_already_in_flight) {
             if (!template_valid && m_template_interface) {
                 m_logger->info("[Solo GET_ROUND] ⚡ CHAIN TIP CHANGED: {} channel advanced "
-                    "(template stale → deferred recovery GET_BLOCK in 2s)",
+                    "(template stale → deferred recovery GET_BLOCK in 5s)",
                     get_channel_name(m_channel));
             } else {
                 m_logger->info("[Solo GET_ROUND] 📭 NEW_ROUND received but no template — "
-                               "deferring recovery GET_BLOCK for 2s");
+                               "deferring recovery GET_BLOCK for 5s");
                 m_logger->info("[Solo GET_ROUND]   This handles legacy nodes that send NEW_ROUND without BLOCK_DATA");
             }
             schedule_recovery_get_block(connection, unified_height);

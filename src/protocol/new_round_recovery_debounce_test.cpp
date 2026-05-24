@@ -1,13 +1,13 @@
 /**
  * @file new_round_recovery_debounce_test.cpp
- * @brief Tests for the 2-second symmetric debounce on the NEW_ROUND recovery GET_BLOCK.
+ * @brief Tests for the 5-second symmetric debounce on the NEW_ROUND recovery GET_BLOCK.
  *
  * Validates the operator-directed fix for the "Double/Triple Template Same Height Burst"
  * caused by a node-side broadcast ordering race:
  *   BLOCK_ACCEPTED, NEW_ROUND, PRIME/HASH_BLOCK_AVAILABLE can arrive in any order
  *   within a ~50–500ms window.
  *
- * The fix: always defer the recovery GET_BLOCK by 2s; cancel the deferred request
+ * The fix: always defer the recovery GET_BLOCK by 5s; cancel the deferred request
  * if a PUSH or BLOCK_ACCEPTED arrives during the wait.
  *
  * Test cases:
@@ -181,7 +181,7 @@ void test1_push_before_new_round()
     f.send_hash_push(6693557, 201);
 
     // Step 2: NEW_ROUND arrives 1ms later.  schedule_recovery_get_block() now
-    // detects the in-transit BLOCK_DATA and refuses to start the 2s timer.
+    // detects the in-transit BLOCK_DATA and refuses to start the 5s timer.
     f.send_new_round(6693556, 200);
 
     // Post-fix expectation: the recovery GET_BLOCK is SUPPRESSED entirely
@@ -190,14 +190,14 @@ void test1_push_before_new_round()
     print_test_result("After PUSH then NEW_ROUND: recovery NOT scheduled (PUSH-in-transit guard)",
                       !f.solo.is_recovery_pending());
 
-    // Drain without waiting full 2s — nothing should change because no timer was started.
+    // Drain without waiting full 5s — nothing should change because no timer was started.
     f.run_for(std::chrono::milliseconds(100));
     print_test_result("After 100ms: recovery still not pending (no timer was ever scheduled)",
                       !f.solo.is_recovery_pending());
 
-    // Drain remaining 2s+ — recovery must never fire because no timer was scheduled.
-    f.run_for(std::chrono::seconds(3));
-    print_test_result("After 3s: recovery NEVER fired (BLOCK_DATA in transit; GET_BLOCK suppressed)",
+    // Drain remaining 5s+ — recovery must never fire because no timer was scheduled.
+    f.run_for(std::chrono::seconds(6));
+    print_test_result("After 6s: recovery NEVER fired (BLOCK_DATA in transit; GET_BLOCK suppressed)",
                       f.solo.get_recovery_fired_count() == 0);
 }
 
@@ -213,13 +213,13 @@ void test2_new_round_before_push()
 
     SoloFixture f;
 
-    // Step 1: NEW_ROUND arrives with no template → schedules 2s deferred recovery
+    // Step 1: NEW_ROUND arrives with no template → schedules 5s deferred recovery
     f.send_new_round(6693556, 200);
     print_test_result("After NEW_ROUND: recovery is pending", f.solo.is_recovery_pending());
 
     // Step 2: Run for 500ms (simulates PUSH arriving 500ms after NEW_ROUND)
     f.run_for(std::chrono::milliseconds(500));
-    print_test_result("At T=500ms: recovery still pending (2s not elapsed)",
+    print_test_result("At T=500ms: recovery still pending (5s not elapsed)",
                       f.solo.is_recovery_pending());
 
     // Step 3: HASH_BLOCK_AVAILABLE push arrives — should cancel the deferred timer
@@ -235,11 +235,11 @@ void test2_new_round_before_push()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 3 — NEW_ROUND with NO follow-up push (legacy node behaviour)
-// No PUSH, no BLOCK_ACCEPTED, no BLOCK_DATA.  The recovery must fire after 2s.
+// No PUSH, no BLOCK_ACCEPTED, no BLOCK_DATA.  The recovery must fire after 5s.
 // ─────────────────────────────────────────────────────────────────────────────
 void test3_new_round_no_push()
 {
-    std::cout << "\nTest 3: NEW_ROUND with no push — recovery fires after 2s\n";
+    std::cout << "\nTest 3: NEW_ROUND with no push — recovery fires after 5s\n";
 
     SoloFixture f;
 
@@ -247,14 +247,14 @@ void test3_new_round_no_push()
     f.send_new_round(6693556, 200);
     print_test_result("After NEW_ROUND: recovery is pending", f.solo.is_recovery_pending());
 
-    // Step 2: Run for 1.9s — timer should NOT have fired yet
-    f.run_for(std::chrono::milliseconds(1900));
-    print_test_result("At T=1.9s: recovery NOT yet fired",
+    // Step 2: Run for 4.9s — timer should NOT have fired yet
+    f.run_for(std::chrono::milliseconds(4900));
+    print_test_result("At T=4.9s: recovery NOT yet fired",
                       f.solo.get_recovery_fired_count() == 0);
 
-    // Step 3: Run for 3s total — timer must fire exactly once
-    f.run_for(std::chrono::seconds(2));
-    print_test_result("After 3s with no push: recovery fired exactly once",
+    // Step 3: Run for 6s total — timer must fire exactly once
+    f.run_for(std::chrono::milliseconds(1100));
+    print_test_result("After 6s with no push: recovery fired exactly once",
                       f.solo.get_recovery_fired_count() == 1);
     print_test_result("After firing: recovery_deferred_at cleared (is_recovery_pending = false)",
                       !f.solo.is_recovery_pending());
@@ -263,7 +263,7 @@ void test3_new_round_no_push()
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 4 — Rapid NEW_ROUND burst (coalescing)
 // Three NEW_ROUNDs in quick succession.  Each cancels the previous timer.
-// Only the LAST one should result in a recovery GET_BLOCK, fired 2s after T=200ms.
+// Only the LAST one should result in a recovery GET_BLOCK, fired 5s after T=200ms.
 // ─────────────────────────────────────────────────────────────────────────────
 void test4_rapid_new_round_burst()
 {
@@ -287,9 +287,9 @@ void test4_rapid_new_round_burst()
     print_test_result("After third NEW_ROUND at T=200ms: recovery still pending",
                       f.solo.is_recovery_pending());
 
-    // Step 4: Run for 3s — only the final 2s timer should fire (once)
-    f.run_for(std::chrono::seconds(3));
-    print_test_result("After 3s: recovery fired exactly once (burst coalesced)",
+    // Step 4: Run for 6s — only the final 5s timer should fire (once)
+    f.run_for(std::chrono::seconds(6));
+    print_test_result("After 6s: recovery fired exactly once (burst coalesced)",
                       f.solo.get_recovery_fired_count() == 1);
 }
 
@@ -396,7 +396,7 @@ int main()
     spdlog::set_default_logger(logger);
 
     std::cout << "================================================\n";
-    std::cout << "NEW_ROUND Recovery Debounce Tests (2s symmetric)\n";
+    std::cout << "NEW_ROUND Recovery Debounce Tests (5s symmetric)\n";
     std::cout << "================================================\n";
 
     test1_push_before_new_round();
