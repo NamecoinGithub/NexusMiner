@@ -127,8 +127,8 @@ public:
 
     // GET_ROUND polling configuration (public so callers can log the intervals)
     static constexpr bool POLLING_ENABLED = true;              // Enabled: GET_ROUND sanity probe for both lanes
-    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 20000;    // 20 seconds — Stake block detection cadence
-    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 20000;    // Same: backoff disabled, fixed 20s interval
+    static constexpr uint32_t POLL_INTERVAL_MIN_MS = 30000;    // 30 seconds — Stake block detection cadence
+    static constexpr uint32_t POLL_INTERVAL_MAX_MS = 30000;    // Same: backoff disabled, fixed 30s interval
     // Minimum push-silence duration before GET_ROUND fallback may trigger GET_BLOCK.
     // Policy: while PUSH is active, GET_ROUND is informational only. Once PUSH has
     // been silent for this threshold, each GET_ROUND poll (POLL_INTERVAL_MIN_MS minimum
@@ -306,7 +306,7 @@ public:
 
     // ── Recovery-debounce test/diagnostic interface ──────────────────────────────
     // These lightweight read-only accessors let unit tests (and future diagnostics)
-    // observe the state of the 2s deferred-recovery timer without needing a network
+    // observe the state of the 5s deferred-recovery timer without needing a network
     // connection or real workers.
 
     /// True when a deferred recovery GET_BLOCK has been scheduled and is still pending.
@@ -314,7 +314,7 @@ public:
         return m_recovery_deferred_at != std::chrono::steady_clock::time_point::min();
     }
 
-    /// How many times the 2s debounce timer fired and attempted to send a recovery
+    /// How many times the 5s debounce timer fired and attempted to send a recovery
     /// GET_BLOCK (regardless of whether the connection was available).  Used by unit
     /// tests to assert that the timer did / did not fire.
     int get_recovery_fired_count() const noexcept { return m_recovery_fired_count; }
@@ -632,7 +632,7 @@ private:
     // Time of the most recent successfully-transmitted GET_ROUND.
     std::chrono::steady_clock::time_point m_last_get_round_transmitted_at{};
 
-    // ── NEW_ROUND recovery debounce (operator-directed 2s symmetric gate) ────────
+    // ── NEW_ROUND recovery debounce (operator-directed 5s symmetric gate) ────────
     // Prevents the "panic GET_BLOCK" that fires immediately when NEW_ROUND arrives
     // with an invalid template, racing the BLOCK_DATA push that almost always
     // arrives within 50–500ms.  Both the "PUSH-before-NEW_ROUND" and
@@ -641,13 +641,13 @@ private:
     // m_io_context: ASIO context for the async timer.  Null in test environments
     //   that do not supply one — in that case the debounce falls back to legacy
     //   immediate behaviour so existing tests are unaffected.
-    // m_recovery_timer: fires the deferred recovery GET_BLOCK after 2s.  Null
+    // m_recovery_timer: fires the deferred recovery GET_BLOCK after 5s.  Null
     //   when m_io_context is null.
     // m_last_block_accepted_time / m_last_push_received_time: timestamps of the
     //   most recent BLOCK_ACCEPTED and PUSH arrivals (used for diagnostic logging).
     // m_recovery_deferred_at: set when the timer is scheduled; cleared on fire or
     //   cancel.  sentinel = time_point::min() (not scheduled).
-    static constexpr auto kRecoveryDebounceWindow = std::chrono::seconds(2);
+    static constexpr auto kRecoveryDebounceWindow = std::chrono::seconds(5);
     // Time at which the most recent BLOCK_DATA template was successfully adopted.
     // Used to suppress redundant GET_BLOCK requests from polling races immediately
     // after a fresh template was already fed to workers.
@@ -662,9 +662,9 @@ private:
         std::chrono::steady_clock::time_point::min()};
     std::chrono::steady_clock::time_point m_recovery_deferred_at{
         std::chrono::steady_clock::time_point::min()};
-    int m_recovery_fired_count{0}; ///< Incremented each time the 2s timer fires (for tests)
+    int m_recovery_fired_count{0}; ///< Incremented each time the 5s timer fires (for tests)
 
-    // Schedule a deferred (2s) recovery GET_BLOCK in response to NEW_ROUND with
+    // Schedule a deferred (5s) recovery GET_BLOCK in response to NEW_ROUND with
     // no valid template.  Cancels any previously pending deferred recovery so
     // rapid NEW_ROUND bursts are coalesced.  Falls back to immediate behaviour
     // when no io_context is available (legacy / test environments).
@@ -672,7 +672,7 @@ private:
                                      uint32_t unified_height);
 
     // Cancel any pending deferred recovery GET_BLOCK (called from PUSH /
-    // BLOCK_ACCEPTED handlers when a response has arrived before the 2s window
+    // BLOCK_ACCEPTED handlers when a response has arrived before the 5s window
     // elapsed — "push won the race").
     void cancel_recovery_timer(const char* handler_name);
 
