@@ -2845,7 +2845,7 @@ void Solo::schedule_recovery_get_block(
     m_recovery_timer->cancel();
     m_recovery_timer->expires_after(kRecoveryDebounceWindow);
     m_recovery_timer->async_wait(
-        [this, conn = connection]
+        [this, conn = connection, unified_height]
         (const asio::error_code& ec) {
             if (ec == asio::error::operation_aborted) {
                 // Cancelled — either a newer NEW_ROUND superseded us, or a
@@ -2864,6 +2864,35 @@ void Solo::schedule_recovery_get_block(
                         kRecoveryDebounceWindow).count());
                 m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
                 return;
+            }
+            // Final push-in-transit guard at fire time.
+            //
+            // The schedule-time guard above (Phase C1) covers PUSH-before-NEW_ROUND.
+            // cancel_recovery_timer() in on_push_notification covers PUSH-during-defer
+            // by aborting this async_wait.  This third guard closes the residual
+            // race window where a PUSH arrives so close to timer expiry that
+            // m_recovery_timer->cancel() returns 0 (the wait already completed
+            // and is queued on the io_context) — the cancel log fires but the
+            // callback still runs and would otherwise send a redundant GET_BLOCK
+            // on top of the BLOCK_DATA the node is already auto-sending.
+            //
+            // Re-evaluating push_implies_block_data_in_transit() right before
+            // the send keeps this path consistent with all other channel-aware
+            // BLOCK_DATA-in-transit guards in solo.cpp.
+            {
+                auto snap_now = m_height_tracker.GetSnapshot();
+                if (push_implies_block_data_in_transit(snap_now, unified_height,
+                                                       push_in_transit_guard_for_channel().count())) {
+                    m_logger->info(
+                        "[NEW_ROUND] Recovery GET_BLOCK suppressed at fire time: "
+                        "PUSH for height ≥ {} arrived during {}ms debounce — "
+                        "BLOCK_DATA in transit, no recovery needed",
+                        unified_height,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            kRecoveryDebounceWindow).count());
+                    m_recovery_deferred_at = std::chrono::steady_clock::time_point::min();
+                    return;
+                }
             }
             m_logger->info(
                 "[NEW_ROUND] Recovery GET_BLOCK firing after {}ms debounce: "
