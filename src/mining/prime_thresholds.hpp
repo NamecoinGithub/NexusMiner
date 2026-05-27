@@ -56,6 +56,7 @@
 /// integer constants in both `__device__` code and host code.
 
 #include <cstdint>
+#include <cmath>
 
 #if defined(__CUDACC__)
 #  define NEXUSMINER_PRIME_THRESHOLD_FN __host__ __device__ constexpr
@@ -138,6 +139,25 @@ NEXUSMINER_PRIME_THRESHOLD_FN int close_chain_min(int target_length) noexcept
 NEXUSMINER_PRIME_THRESHOLD_FN int popcount_window_supported_max() noexcept
 {
     return 9;
+}
+
+/// Canonical per-session target Cunningham chain length derivation from
+/// the wire-format `nbits` field.  Centralises the formula used by every
+/// engine binding site so CPU and GPU cannot silently drift apart.
+///
+/// `nbits / 10'000'000.0` mirrors `Worker_prime::getNetworkDifficulty()`
+/// — the fractional component becomes the share-difficulty bonus, the
+/// integer ceiling becomes the chain length the sieve targets.  Floor 2
+/// is enforced by clamp_target_length to keep the chain-cluster filter
+/// from being disabled entirely at degenerate inputs.
+///
+/// Used by:
+///   * CPU `PrimeMiningEngine::run_pool_thread` (per-session sieve prepare)
+///   * GPU `Worker_prime::run` (per-session GPU sieve set_target_length)
+NEXUSMINER_PRIME_THRESHOLD_FN int derive_target_length(std::uint32_t nbits) noexcept
+{
+    return clamp_target_length(static_cast<int>(std::ceil(
+        static_cast<double>(nbits) / 10000000.0)));
 }
 
 } // namespace mining
