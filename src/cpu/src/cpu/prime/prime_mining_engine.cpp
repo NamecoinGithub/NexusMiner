@@ -624,16 +624,32 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
             // (previous_hash, nHeight) discriminator that DOES abort the chunk.
             const std::uint64_t my_epoch = session->epoch_id;
             const uint1k my_base_hash = session->base_hash;
+            const std::uint32_t my_nbits = session->nbits;
 
-            // ── Rebind on base-hash change.  Sieve starting multiples depend
-            // on the EXACT base_hash, so any base_hash change requires
-            // sieve->prepare() to be re-run.  Same-base republishes (epoch
-            // advances but base_hash unchanged) do NOT need a sieve re-prepare
-            // because local_sieve_start is determined entirely by
+            // ── Rebind on base-hash change OR nbits change.
+            //
+            // Sieve starting multiples depend on the EXACT base_hash, so any base_hash
+            // change requires sieve->prepare() to be re-run.  Same-base republishes
+            // (epoch advances but base_hash unchanged) do NOT need a sieve re-prepare
+            // for starting multiples — local_sieve_start is determined entirely by
             // (base_hash, starting_nonce).
+            //
+            // HOWEVER, the sieve's target_length (which controls close_chain_min,
+            // popcount_window_floor, and the per-segment chain-quality gate) is also
+            // rebound inside this block, derived from session->nbits.  If nbits
+            // changes across two same-base templates (rare but possible when the node
+            // serves a singleflight waiter a template built pre-retarget while the
+            // local view of difficulty has already advanced), and we DON'T re-enter
+            // this block, the sieve keeps running with the stale target_length and
+            // silently drops length-N candidates as below-difficulty.  The bug class
+            // surfaces as: stats show Best 7.x climbing while bucket 7 stays at 0 and
+            // rejected_below_diff dominates validate_attempts.
+            //
+            // Extending the gate to also fire on nbits change closes the hole.
             const bool need_rebind = !bound
                 || !bound_session
-                || my_base_hash != bound_session->base_hash;
+                || my_base_hash != bound_session->base_hash
+                || my_nbits != bound_session->nbits;
             if (need_rebind)
             {
                 // Stone 6.9 — derive the per-session target Cunningham chain
@@ -645,8 +661,7 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 // never disable the sieve's chain-cluster filter entirely.
                 const double required_difficulty =
                     static_cast<double>(session->nbits) / 10000000.0;
-                int target_length = nexusminer::mining::clamp_target_length(
-                    static_cast<int>(std::ceil(required_difficulty)));
+                int target_length = nexusminer::mining::derive_target_length(session->nbits);
 
                 // Stone 6.9.2 — observability for difficulty-driven gate
                 // changes.  Logged at INFO with a stable, greppable prefix
@@ -661,14 +676,19 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                     && sieve->get_target_length() != target_length
                     && m_logger)
                 {
+                    const char* rebind_reason =
+                        (my_base_hash != bound_session->base_hash && my_nbits != bound_session->nbits) ? "base+nbits" :
+                        (my_nbits != bound_session->nbits)                                              ? "nbits"      :
+                                                                                                          "base";
                     m_logger->info("[PrimeMiningEngine] pool[{}] target_length "
                                    "{} -> {} (nbits={}, difficulty={:.2f}, "
-                                   "popcount_floor={}, close_chain_min={})",
+                                   "popcount_floor={}, close_chain_min={}, reason={})",
                                    pool_index,
                                    sieve->get_target_length(), target_length,
                                    session->nbits, required_difficulty,
                                    nexusminer::mining::popcount_window_floor(target_length),
-                                   nexusminer::mining::close_chain_min(target_length));
+                                   nexusminer::mining::close_chain_min(target_length),
+                                   rebind_reason);
                 }
 
                 if (sieve)
