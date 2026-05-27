@@ -625,15 +625,19 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
             const std::uint64_t my_epoch = session->epoch_id;
             const uint1k my_base_hash = session->base_hash;
 
-            // ── Rebind on base-hash change.  Sieve starting multiples depend
-            // on the EXACT base_hash, so any base_hash change requires
-            // sieve->prepare() to be re-run.  Same-base republishes (epoch
-            // advances but base_hash unchanged) do NOT need a sieve re-prepare
-            // because local_sieve_start is determined entirely by
-            // (base_hash, starting_nonce).
+            // ── Rebind on (base_hash, nbits) change.  Sieve starting
+            // multiples depend on the EXACT base_hash, and target_length is
+            // derived from nbits.  Either change requires sieve->prepare() to
+            // be re-run so slot/difficulty gates stay aligned with the current
+            // template.
+            const bool base_hash_changed = !bound_session
+                || my_base_hash != bound_session->base_hash;
+            const bool nbits_changed = !bound_session
+                || session->nbits != bound_session->nbits;
             const bool need_rebind = !bound
                 || !bound_session
-                || my_base_hash != bound_session->base_hash;
+                || base_hash_changed
+                || nbits_changed;
             if (need_rebind)
             {
                 // Stone 6.9 — derive the per-session target Cunningham chain
@@ -648,6 +652,30 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 int target_length = nexusminer::mining::clamp_target_length(
                     static_cast<int>(std::ceil(required_difficulty)));
 
+                if (m_logger && bound_session
+                    && my_base_hash == bound_session->base_hash
+                    && nbits_changed)
+                {
+                    const double previous_difficulty =
+                        static_cast<double>(bound_session->nbits) / 10000000.0;
+                    const int previous_target_length =
+                        nexusminer::mining::clamp_target_length(
+                            static_cast<int>(std::ceil(previous_difficulty)));
+                    std::ostringstream oss;
+                    oss << std::hex << my_base_hash;
+                    const std::string base_hash_hex = oss.str();
+                    const std::string base_hash_short =
+                        base_hash_hex.size() > 16 ? base_hash_hex.substr(0, 16) : base_hash_hex;
+
+                    m_logger->info("[PrimeMiningEngine] [NBITS_REBIND] pool[{}] "
+                                   "target_length {} -> {} (nBits 0x{:08x} -> 0x{:08x}, "
+                                   "base_hash unchanged={})",
+                                   pool_index,
+                                   previous_target_length, target_length,
+                                   bound_session->nbits, session->nbits,
+                                   base_hash_short);
+                }
+
                 // Stone 6.9.2 — observability for difficulty-driven gate
                 // changes.  Logged at INFO with a stable, greppable prefix
                 // so operators can correlate any throughput step-change
@@ -658,6 +686,7 @@ void PrimeMiningEngine::run_pool_thread(std::uint32_t pool_index)
                 // pool thread had a previous bound session — initial bind
                 // is implicit in pool startup and would just be noise.
                 if (sieve && bound_session
+                    && !(nbits_changed && !base_hash_changed)
                     && sieve->get_target_length() != target_length
                     && m_logger)
                 {

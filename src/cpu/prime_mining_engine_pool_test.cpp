@@ -32,6 +32,7 @@
 
 #include <asio.hpp>
 #include <spdlog/sinks/null_sink.h>
+#include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
 #include <atomic>
@@ -39,6 +40,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <thread>
 
 using namespace nexusminer;
@@ -490,6 +492,46 @@ void test_session_only_mode_null_io_context()
                  engine.pool_threads_crashed() == 0);
 }
 
+void test_nbits_only_rebind_logs_and_rebinds()
+{
+    std::ostringstream captured_logs;
+    auto capture_sink =
+        std::make_shared<spdlog::sinks::ostream_sink_mt>(captured_logs);
+    auto capture_logger =
+        std::make_shared<spdlog::logger>("logger", capture_sink);
+    capture_logger->set_level(spdlog::level::info);
+    capture_logger->flush_on(spdlog::level::info);
+    spdlog::drop("logger");
+    spdlog::register_logger(capture_logger);
+
+    {
+        Test_io_context io;
+        auto feed = std::make_shared<WorkerTemplateFeed>();
+        PrimeMiningEngine engine{make_cfg(/*pool_threads=*/1, io.ctx), feed};
+
+        boost::multiprecision::uint1024_t base{"0x5eed"};
+
+        feed->publish(make_epoch(make_work_package(0x03de5a03u, base, 77)));
+        auto published = engine.wait_for_sessions_published_after(0, 2s);
+        wait_until(500ms, [&] { return engine.segments_processed() >= 4; });
+
+        feed->publish(make_epoch(make_work_package(0x03df0000u, base, 77)));
+        engine.wait_for_sessions_published_after(published, 2s);
+
+        const bool saw_nbits_rebind = wait_until(2s, [&] {
+            return captured_logs.str().find("[NBITS_REBIND]") != std::string::npos;
+        });
+        print_result("nBits-only republish emits [NBITS_REBIND] log", saw_nbits_rebind);
+    }
+
+    spdlog::drop("logger");
+    spdlog::create<spdlog::sinks::null_sink_mt>("logger");
+
+    const std::string logs = captured_logs.str();
+    print_result("nBits-only republish log reports unchanged base_hash",
+                 logs.find("base_hash unchanged=") != std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stone 6.5 — regression test: chunk-based amortisation of
 // Sieve::calculate_starting_multiples() under the REAL sieve path.
@@ -651,6 +693,7 @@ int main()
     test_same_base_republish_preserves_work();
     test_merkle_rotation_republish_preserves_chunk();
     test_session_only_mode_null_io_context();
+    test_nbits_only_rebind_logs_and_rebinds();
     test_invalid_chunk_size_rejected();
     test_chunk_amortizes_starting_multiples_calls();
 

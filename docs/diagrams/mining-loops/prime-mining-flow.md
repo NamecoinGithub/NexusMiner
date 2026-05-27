@@ -110,6 +110,8 @@ flowchart TD
 
 The keepalive (B) is the single change that re-populates the chain histogram's bucket-6 / bucket-7 cells once the target reaches the same length. The fast path (D) is an allocation-free shortcut when the chain has not yet seen any failures (the chain is then still contiguous, so the totals upper bound is exact).
 
+**Fix history:** The invalidation key was originally `base_hash` only, which missed `nBits`-only changes (difficulty retargets at the same chain tip). This produced a regression where `Best` would show length-N chains but `slot[N]` would stay at 0 because the engine's `target_length` was bound to the previous-difficulty derivation. Fixed by extending the key to `(base_hash, nBits)` in this PR.
+
 ### Diagnostic histograms
 
 - `Sieve::m_chain_histogram[k]` — count of chains whose **best Fermat run** reached length `k` (exactly).
