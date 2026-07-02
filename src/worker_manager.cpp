@@ -1409,7 +1409,6 @@ void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason
     m_logger->warn("[Worker_manager] Degraded-mode watchdog: connectivity restored ({}) — "
                    "exiting auto-recoverable degraded mode", reason ? reason : "unknown");
 
-    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
     ++m_degraded_watchdog_token;  // Cancel any pending probe reschedule.
     if (m_degraded_watchdog_timer) {
         m_degraded_watchdog_timer->cancel();
@@ -1420,7 +1419,9 @@ void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason
     // handlers already know how to drive RECONNECTING → WAITING_TEMPLATE →
     // HEALTHY once a template arrives.
     transition_to(RecoveryPhase::RECONNECTING, reason, true);
-}
+
+    // Clear the recoverable flag only after transition_to() has observed it.
+    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
 
 void Worker_manager::handle_node_shutdown(uint8_t reason)
 {
