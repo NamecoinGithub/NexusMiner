@@ -219,9 +219,9 @@ private:
     uint16_t next_session_auth_retry_delay_seconds() const;
 
     // ── State machine transition API ───────────────────────────────────────────
-    /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
-    /// (in debug builds: asserts; in release: logs error and returns without change),
-    /// runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
+    /// Transition to a new RecoveryPhase. Logs the transition and validates legality
+    /// (in debug builds: asserts; in release builds: logs an error and proceeds),
+    /// then runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
     /// force_from_degraded must only be passed as true by
     /// exit_recoverable_degraded_mode_if_active() — it is the single, narrow,
     /// explicitly-audited exception to "DEGRADED_MODE has no legal way out"
