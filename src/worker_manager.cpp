@@ -1422,6 +1422,7 @@ void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason
 
     // Clear the recoverable flag only after transition_to() has observed it.
     m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
+}
 
 void Worker_manager::handle_node_shutdown(uint8_t reason)
 {
