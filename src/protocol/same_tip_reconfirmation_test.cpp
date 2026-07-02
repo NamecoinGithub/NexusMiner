@@ -102,7 +102,6 @@ std::vector<uint8_t> make_block_payload(uint32_t height, uint8_t hash_prev_patte
     for (int i = 0; i < 8; ++i) {
         data.push_back(0);
     }
-    (void)offset;
 
     return data;
 }
