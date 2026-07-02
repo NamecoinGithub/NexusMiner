@@ -100,7 +100,7 @@ std::vector<uint8_t> make_block_payload(uint32_t height, uint8_t hash_prev_patte
 
     // nNonce (8 bytes, little-endian per node wire format) — zero.
     for (int i = 0; i < 8; ++i) {
-        data.push_back(0);
+        data[offset++] = 0;
     }
 
     return data;
