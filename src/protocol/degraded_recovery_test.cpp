@@ -1370,6 +1370,12 @@ enum class MirrorPhase : uint8_t { HEALTHY, WAITING_TEMPLATE, RECONNECTING, DEGR
 
 static bool mirror_is_valid_transition(MirrorPhase from, MirrorPhase to,
                                         bool force_from_degraded, bool degraded_mode_recoverable) {
+    // Simplified test mirror: this intentionally only validates the
+    // DEGRADED_MODE exit invariant (the new force_from_degraded escape
+    // hatch). It is NOT a full mirror of Worker_manager::is_valid_transition()
+    // — the final `return true` fallthrough deliberately treats every other
+    // (from, to) pair as legal since this test cares only about whether
+    // DEGRADED_MODE can/cannot be exited under various flag combinations.
     if (from == to) return true;
     if (from == MirrorPhase::DEGRADED_MODE) {
         return force_from_degraded &&

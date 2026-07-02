@@ -1405,7 +1405,7 @@ void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason
     // Hand off to the normal reconnect machinery: work-ready / session
     // handlers already know how to drive RECONNECTING → WAITING_TEMPLATE →
     // HEALTHY once a template arrives.
-    transition_to(RecoveryPhase::RECONNECTING, reason, /*force_from_degraded=*/true);
+    transition_to(RecoveryPhase::RECONNECTING, reason, true);
 }
 
 void Worker_manager::handle_node_shutdown(uint8_t reason)
@@ -2310,7 +2310,10 @@ uint16_t Worker_manager::next_session_auth_retry_delay_seconds() const
 {
     // m_session_auth_fail_count is 1-based by the time this is consulted
     // (incremented before the check in both call sites), matching
-    // ExponentialBackoff::calculate_delay_seconds()'s 1-based attempt_count.
+    // ExponentialBackoff::calculate_delay_seconds()'s 1-based attempt_count
+    // (attempt 1 = first retry after the first failure, delay = base;
+    // attempt 2 = base*2; ...). Passing it through directly, with no -1/+1
+    // adjustment, is what keeps the two indexing schemes aligned.
     return static_cast<uint16_t>(m_session_auth_backoff.calculate_delay_seconds(m_session_auth_fail_count));
 }
 

@@ -82,9 +82,11 @@ struct RecoveryContext {
     std::atomic<int> degraded_signal{0};
 
     // True only while DEGRADED_MODE was entered because a controlled retry
-    // budget was exhausted (session re-auth / recovery window). When true,
-    // a watchdog silently keeps probing the node and is the ONLY thing
-    // allowed to transition back out of DEGRADED_MODE (see
+    // budget was exhausted (session re-auth / recovery window). When true, a
+    // watchdog silently keeps probing the node, and connectivity/session
+    // restoration observed via any path (watchdog probe, in-band re-auth,
+    // work-ready) is permitted to transition back out of DEGRADED_MODE via
+    // exit_recoverable_degraded_mode_if_active() (see
     // Worker_manager::transition_to's force_from_degraded parameter).
     // Never set for signal-driven or fatal-config terminal entries.
     std::atomic<bool> degraded_mode_recoverable{false};
