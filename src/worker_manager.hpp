@@ -186,6 +186,16 @@ private:
     /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
+    /// Called when Solo's same-height feed guard suppresses a re-feed because the node
+    /// re-served BLOCK_DATA identical to the template already loaded (same unified height
+    /// AND hashPrevBlock). This proves the currently-loaded template is still canonical,
+    /// even though no re-distribution to workers occurred, so any in-flight recovery can
+    /// be cleared immediately via clear_recovery_state() instead of waiting for a
+    /// genuinely new tip or escalating toward degraded mode. A no-op when recovery is
+    /// not active. Safe to call unconditionally — clear_recovery_state() re-validates
+    /// template/session preconditions before actually clearing.
+    void handle_recovery_confirmed(const char* reason);
+
     void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
     void enter_terminal_degraded_mode_internal(int signal_number, const char* reason);
     void handle_node_shutdown(uint8_t reason);
@@ -269,6 +279,11 @@ private:
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
     uint64_t m_time_in_degraded_ms{0};
+    // Count of recovery-confirmed signals (same-tip reconfirmations) that actually
+    // resulted in clear_recovery_state() clearing an active recovery. Diagnostic
+    // only — helps distinguish "recovery cleared via reconfirmation" from "cleared
+    // via a genuinely new template feed" in operator logs.
+    uint64_t m_recovery_confirmed_clears_total{0};
 
     // Bug 5 fix: Track last GET_BLOCK request time to prevent burst duplicate
     // requests from forced retry timer (100-250ms) and health monitor (5s cycle)

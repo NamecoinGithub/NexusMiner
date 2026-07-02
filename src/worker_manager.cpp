@@ -798,6 +798,20 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Session expired handler registered");
 
+        /* ========== REGISTER RECOVERY-CONFIRMED HANDLER ========== */
+        /* Called by Solo when the node re-serves BLOCK_DATA identical to the template   */
+        /* already loaded (same unified height + hashPrevBlock) while the same-height    */
+        /* feed guard suppresses redistributing it to workers. This is proof the current */
+        /* template is still canonical, so an in-flight recovery can clear immediately   */
+        /* rather than waiting for a genuinely new tip (or escalating toward degraded    */
+        /* mode) — see handle_recovery_confirmed().                                      */
+        m_primary_node_session->set_recovery_confirmed_handler(
+            [this]() {
+                handle_recovery_confirmed("same_tip_reconfirmed");
+            }
+        );
+        m_logger->info("[Worker_manager] Recovery-confirmed handler registered");
+
         /* ========== REGISTER SESSION AUTHENTICATED HANDLER (BUG FIX #2) ========== */
         /* Called by Solo after MINER_AUTH_RESULT is fully processed and session_id is set. */
         /* This is the correct place to check session_id=0 (not in the login callback which */
@@ -2451,6 +2465,45 @@ void Worker_manager::restart_recovery_window(const char* reason)
                        m_epoch_coordinator->recovery_epoch(),
                        elapsed_s,
                        phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
+    }
+}
+
+void Worker_manager::handle_recovery_confirmed(const char* reason)
+{
+    // Fires unconditionally from Solo whenever the same-height feed guard
+    // suppresses a re-feed, whether or not a recovery is currently active.
+    // Only act when there is actually something to clear.
+    if (!is_recovery_active()) {
+        return;
+    }
+
+    // DEGRADED_MODE (both terminal and auto-recoverable flavors) has its own
+    // narrowly-audited exit paths (enter_terminal_degraded_mode_internal's operator
+    // restart, or exit_recoverable_degraded_mode_if_active()'s connectivity-proof
+    // gate). A same-tip BLOCK_DATA response is not expected to reach this handler
+    // while workers are fully stopped in DEGRADED_MODE (no active GET_BLOCK/BLOCK_DATA
+    // flow), but guard against it anyway rather than risk bypassing that audited exit.
+    if (is_terminal_degraded()) {
+        return;
+    }
+
+    m_logger->info("[Worker_manager] Recovery-confirmed signal received ({}): node re-served the "
+                   "template already loaded — current tip is still canonical. Attempting to clear "
+                   "recovery without a worker re-feed (phase={})",
+                   reason ? reason : "unknown",
+                   phase_name(m_recovery.phase.load(std::memory_order_relaxed)));
+
+    // clear_recovery_state() independently re-validates that a valid template is
+    // available and the authoritative session is restored before actually clearing —
+    // it is safe to call here even though no new distribution to workers occurred.
+    const bool was_active = is_recovery_active();
+    clear_recovery_state();
+
+    if (was_active && !is_recovery_active()) {
+        ++m_recovery_confirmed_clears_total;
+        m_logger->warn("[Worker_manager] ✅ Recovery cleared via same-tip reconfirmation ({}) — "
+                       "no worker re-feed was necessary (cumulative reconfirmation-clears={})",
+                       reason ? reason : "unknown", m_recovery_confirmed_clears_total);
     }
 }
 

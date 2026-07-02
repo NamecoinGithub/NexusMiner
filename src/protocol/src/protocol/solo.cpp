@@ -1092,9 +1092,24 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::steady_clock::now() - m_last_fed_time).count();
                 if (elapsed < SAME_HEIGHT_FEED_COOLDOWN_SECONDS) {
+                    ++m_same_tip_reconfirmation_count;
                     m_logger->info("[{}] Feed suppressed: same unified height {} within {}s cooldown "
-                                   "(elapsed {}s, same hashPrevBlock)",
-                                   log_scope, unified_height, SAME_HEIGHT_FEED_COOLDOWN_SECONDS, elapsed);
+                                   "(elapsed {}s, same hashPrevBlock, reconfirmation #{})",
+                                   log_scope, unified_height, SAME_HEIGHT_FEED_COOLDOWN_SECONDS, elapsed,
+                                   m_same_tip_reconfirmation_count);
+
+                    // The node just proved the currently-loaded tip is still canonical —
+                    // this is a legitimate proof-of-liveness even though no re-feed is
+                    // needed. If a recovery cycle (e.g. WAITING_TEMPLATE after a
+                    // submit-side hashPrevBlock mismatch) is waiting specifically for
+                    // confirmation that the current template is still good, it would
+                    // otherwise never learn about this response, because the normal
+                    // feed-handler chokepoint (and its clear_recovery_state() call) is
+                    // never reached when the guard above suppresses the re-feed.
+                    if (m_recovery_confirmed_handler) {
+                        m_recovery_confirmed_handler();
+                    }
+
                     return true;  // receive succeeded, feed intentionally suppressed
                 }
             }

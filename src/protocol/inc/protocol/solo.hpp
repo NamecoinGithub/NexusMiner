@@ -76,6 +76,11 @@ public:
     /// discard-and-retry doom loop.
     uint32_t get_hashprev_mismatch_consecutive() const { return m_hashprev_mismatch_consecutive.load(std::memory_order_relaxed); }
 
+    /// Returns how many times the same-height feed guard has suppressed a re-feed
+    /// because the node re-served an unchanged (same height, same hashPrevBlock)
+    /// template. Diagnostic counter only — see m_same_tip_reconfirmation_count.
+    uint64_t get_same_tip_reconfirmation_count() const { return m_same_tip_reconfirmation_count; }
+
     /// Returns a const reference to the HashCheckpointGuard for diagnostic queries.
     /// The guard maintains a rolling window of recent canonical hashPrevBlock values
     /// and provides reorg depth estimation for Colin diagnostics.
@@ -254,6 +259,26 @@ public:
     // Recovery_handler above).
     using Session_expired_handler = std::function<void()>;
     void set_session_expired_handler(Session_expired_handler h) { m_session_expired_handler = std::move(h); }
+
+    // Recovery-confirmed callback: called when the node re-serves BLOCK_DATA that turns
+    // out to be identical to the template already loaded (same unified height AND same
+    // hashPrevBlock) while a recovery-triggering GET_BLOCK request is in flight.
+    //
+    // This is distinct from the normal template-feed path: the same-height feed guard in
+    // finalize_and_feed_current_template() intentionally suppresses re-distributing an
+    // unchanged template to workers (to avoid redundant worker restarts), which means
+    // Worker_manager's feed handler — the only place that normally clears recovery state
+    // via clear_recovery_state() — never runs for this response.
+    //
+    // Without this signal, a recovery cycle that legitimately confirms "the tip I already
+    // have is still the canonical one" is indistinguishable from one that got no answer at
+    // all, and stays parked in WAITING_TEMPLATE until a genuinely new tip arrives or the
+    // controlled-recovery hard-stop escalates it into DEGRADED_MODE. Since the node just
+    // proved it is alive and the current template is still valid, Worker_manager should be
+    // allowed to clear recovery immediately on this signal (subject to its own session/
+    // template validity gates in clear_recovery_state()) instead of waiting.
+    using Recovery_confirmed_handler = std::function<void()>;
+    void set_recovery_confirmed_handler(Recovery_confirmed_handler h) { m_recovery_confirmed_handler = std::move(h); }
 
     // Session-authenticated callback: called after MINER_AUTH_RESULT is fully processed and session_id is set.
     // Worker_manager registers this to check session_id=0 and trigger retry if needed.
@@ -710,6 +735,13 @@ private:
     uint32_t     m_last_fed_unified_height{0};
     uint1024_t   m_last_fed_hash_prev_block{};
     std::chrono::steady_clock::time_point m_last_fed_time{};
+
+    // Counts same-tip re-confirmations observed while the guard above suppresses a
+    // re-feed (node re-served BLOCK_DATA that is identical to what is already loaded).
+    // Surfaced in logs so operators can distinguish "miner alive, node just re-confirmed
+    // the same still-valid tip" from a genuinely stalled recovery. Also read by
+    // Worker_manager for diagnostics via get_same_tip_reconfirmation_count().
+    uint64_t m_same_tip_reconfirmation_count{0};
     
     // Unified Falcon Signature Wrapper (Phase 2 enhancement)
     std::unique_ptr<FalconSignatureWrapper> m_falcon_wrapper;
@@ -770,6 +802,13 @@ private:
     // Session-expired callback — invoked when a keepalive ACK carries a mismatched session_id,
     // signalling Worker_manager to trigger recovery for the stale session.
     Session_expired_handler m_session_expired_handler;
+
+    // Recovery-confirmed callback — invoked when the same-height feed guard in
+    // finalize_and_feed_current_template() suppresses a re-feed because the node re-served
+    // an unchanged template (same unified height AND hashPrevBlock already loaded). Lets
+    // Worker_manager clear an in-flight recovery immediately on this proof-of-liveness
+    // instead of waiting for a genuinely new tip or escalating toward degraded mode.
+    Recovery_confirmed_handler m_recovery_confirmed_handler;
 
     // Session-authenticated callback — invoked after MINER_AUTH_RESULT processing is complete.
     // Worker_manager uses this to check session_id=0 and trigger retry if needed.
@@ -946,6 +985,7 @@ private:
     PendingGetBlock m_pending_get_block;
 
     friend struct PostAdoptionSuppressionHarness;
+    friend struct SameTipReconfirmationHarness;
 
 public:
     /// Mark a GET_BLOCK request as successfully transmitted using the current
