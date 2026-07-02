@@ -49,8 +49,13 @@ namespace {
     constexpr int64_t RECOVERY_WINDOW_SECONDS_HASH  = 300;   // Hash can still see long burst-driven gaps; allow 5 min before forced reconnect
     constexpr int64_t RECOVERY_WINDOW_SECONDS_PRIME = 300;   // Prime blocks also tolerate long gaps; align both channels on the same 5 min window
     constexpr int64_t CONTROLLED_RECOVERY_HARD_STOP_SECONDS = 300;
-    constexpr uint32_t CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS = 3;
-    constexpr uint16_t CONTROLLED_SESSION_AUTH_RETRY_SECONDS = 90;
+    // Widened from 3 attempts to give a reorg-storm-driven session-expired burst
+    // more headroom to self-resolve before falling back to (auto-recoverable)
+    // degraded mode. Delay between attempts now uses Worker_manager's existing
+    // m_session_auth_backoff (exponential, see next_session_auth_retry_delay_seconds())
+    // instead of a fixed 90s wait, so early retries are fast and later ones are
+    // patient — total budget grows from ~4.5 min to several minutes.
+    constexpr uint32_t CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS = 6;
 
     // Minimum interval between successive GET_BLOCK sends by the health monitor
     // during an active recovery.  Prevents rapid-fire GETs while still allowing
@@ -727,14 +732,15 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 {
                     m_logger->error("[Session] Controlled re-auth retry limit ({}) already reached after SESSION_EXPIRED",
                         CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS);
-                    enter_terminal_degraded_mode_internal(0, "session_expired_retry_budget_exhausted");
+                    enter_recoverable_degraded_mode("session_expired_retry_budget_exhausted");
                     return;
                 }
 
-                // First controlled in-band re-auth is immediate; subsequent ones are
-                // deliberately buffered to avoid endless churn on a sick path.
+                // First controlled in-band re-auth is immediate; subsequent ones use an
+                // exponential backoff (see next_session_auth_retry_delay_seconds()) so
+                // early retries are fast and later ones patiently wait out a storm.
                 auto delay_seconds = static_cast<uint16_t>(
-                    m_session_auth_fail_count > 0 ? CONTROLLED_SESSION_AUTH_RETRY_SECONDS : 0);
+                    m_session_auth_fail_count > 0 ? next_session_auth_retry_delay_seconds() : 0);
 
                 if (delay_seconds > 0) {
                     m_logger->warn("[Session] Scheduling in-band re-authentication in {}s ({} prior failures, controlled retry window)",
@@ -813,13 +819,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                     if (m_session_auth_fail_count >= CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS)
                     {
-                        m_logger->error("[Session] Controlled auth retry limit ({}) reached — halting reconnection",
+                        m_logger->error("[Session] Controlled auth retry limit ({}) reached — entering auto-recoverable degraded mode",
                             CONTROLLED_SESSION_AUTH_MAX_ATTEMPTS);
-                        enter_terminal_degraded_mode_internal(0, "session_auth_retry_budget_exhausted");
+                        enter_recoverable_degraded_mode("session_auth_retry_budget_exhausted");
                         return;
                     }
 
-                    auto delay_seconds = CONTROLLED_SESSION_AUTH_RETRY_SECONDS;
+                    auto delay_seconds = next_session_auth_retry_delay_seconds();
 
                     m_logger->warn("[Session] Scheduling controlled reconnection retry in {}s",
                         delay_seconds);
@@ -835,6 +841,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // Successful authentication: reset session auth failure counter
                 m_session_auth_fail_count = 0;
                 ++m_session_generation;  // New session — invalidate stale timer dispatches
+
+                // If a controlled retry budget had previously been exhausted and we
+                // entered auto-recoverable degraded mode, connectivity is now proven
+                // restored — hand off to the normal reconnect/recovery machinery.
+                exit_recoverable_degraded_mode_if_active("session_authenticated");
 
                 if (m_using_failover)
                 {
@@ -858,6 +869,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 if (!solo_protocol || has_valid_template_available(solo_protocol)) {
                     return;
                 }
+
+                // Defensive safety net: work becoming ready is definitive proof the
+                // node/session is reachable again, regardless of which code path
+                // (in-band re-auth, watchdog probe, ...) produced it.
+                exit_recoverable_degraded_mode_if_active("work_ready");
 
                 const bool recovering_session = is_session_recovery();
                 if (recovering_session || is_reconnecting()) {
@@ -1267,15 +1283,129 @@ void Worker_manager::enter_terminal_degraded_mode_internal(int signal_number, co
         return;
     }
 
+    // A true terminal entry always wins over any in-flight auto-recoverable
+    // watchdog: mark this entry as NOT recoverable and cancel the watchdog so
+    // it never fires a reconnect probe after process shutdown has begun.
+    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
+    ++m_degraded_watchdog_token;
+    if (m_degraded_watchdog_timer) {
+        m_degraded_watchdog_timer->cancel();
+    }
+
     m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
     transition_to(RecoveryPhase::DEGRADED_MODE, reason);
     if (signal_number != 0) {
         m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
     } else {
-        m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered ({}) — full stop",
+        m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered ({}) — full stop, operator action required",
                            reason ? reason : "unknown");
     }
     stop();
+}
+
+void Worker_manager::enter_recoverable_degraded_mode(const char* reason)
+{
+    // A genuine terminal stop (signal, fatal config) always takes priority —
+    // never override it with an "auto-recoverable" entry.
+    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (is_terminal_degraded() && m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+        // Already in an auto-recoverable degraded mode (e.g. a second retry
+        // budget exhausted while the watchdog is already probing) — just log.
+        m_logger->warn("[Worker_manager] Auto-recoverable degraded mode already active (reason: {})",
+                       reason ? reason : "unknown");
+        return;
+    }
+
+    m_recovery.degraded_mode_recoverable.store(true, std::memory_order_release);
+    transition_to(RecoveryPhase::DEGRADED_MODE, reason);
+
+    // Mining fully stops — this is the whole point of "Full Stop Degraded
+    // Mode has a purpose": no hashrate/energy is spent while the node/network
+    // is unreachable. stop_all_workers() (not stop()) keeps the TCP/timer
+    // infrastructure alive so the watchdog below can actually reconnect.
+    stop_all_workers();
+
+    m_degraded_watchdog_backoff.reset();
+    m_logger->critical("[Worker_manager] DEGRADED MODE entered ({}) — mining halted (no energy spent). "
+                       "Auto-recovery watchdog engaged; no operator action required unless the node "
+                       "remains unreachable for an extended period.", reason ? reason : "unknown");
+    schedule_degraded_watchdog();
+}
+
+void Worker_manager::schedule_degraded_watchdog()
+{
+    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+        return;  // Recovered (or superseded by a real terminal stop) — nothing to schedule.
+    }
+    if (!m_io_context) {
+        return;
+    }
+
+    const uint32_t delay_s = m_degraded_watchdog_backoff.next_delay();
+    const uint64_t token = ++m_degraded_watchdog_token;
+
+    m_logger->warn("[Worker_manager] Degraded-mode watchdog: next reconnect probe (#{}) in {}s",
+                   m_degraded_watchdog_backoff.get_attempt_count(), delay_s);
+
+    auto timer = std::make_shared<asio::steady_timer>(*m_io_context, std::chrono::seconds(delay_s));
+    m_degraded_watchdog_timer = timer;
+    timer->async_wait([weak_self = weak_from_this(), timer, token](const asio::error_code& ec) {
+        auto self = weak_self.lock();
+        if (!self || ec) {
+            return;  // Cancelled (recovered / shutting down) or manager gone.
+        }
+        self->run_degraded_watchdog_probe(token);
+    });
+}
+
+void Worker_manager::run_degraded_watchdog_probe(uint64_t token)
+{
+    if (token != m_degraded_watchdog_token) {
+        return;  // Superseded by a newer probe / recovery / terminal stop.
+    }
+    if (m_terminal_stop_requested.load(std::memory_order_acquire) ||
+        !m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    m_logger->warn("[Worker_manager] Degraded-mode watchdog: attempting reconnect probe to {}",
+                   m_primary_endpoint.to_string());
+    // retry_connect() safely no-ops if a connection attempt is already
+    // in-flight or if the TCP path is demonstrably alive (push-liveness
+    // guard), so it is safe to call on every probe tick.
+    retry_connect(m_primary_endpoint);
+
+    // Always reschedule at the (advanced) backoff interval. If the probe
+    // above succeeds, exit_recoverable_degraded_mode_if_active() cancels the
+    // watchdog via the token bump, so this reschedule becomes a no-op.
+    schedule_degraded_watchdog();
+}
+
+void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason)
+{
+    if (!is_terminal_degraded() || !m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    m_logger->warn("[Worker_manager] Degraded-mode watchdog: connectivity restored ({}) — "
+                   "exiting auto-recoverable degraded mode", reason ? reason : "unknown");
+
+    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
+    ++m_degraded_watchdog_token;  // Cancel any pending probe reschedule.
+    if (m_degraded_watchdog_timer) {
+        m_degraded_watchdog_timer->cancel();
+    }
+    m_degraded_watchdog_backoff.reset();
+
+    // Hand off to the normal reconnect machinery: work-ready / session
+    // handlers already know how to drive RECONNECTING → WAITING_TEMPLATE →
+    // HEALTHY once a template arrives.
+    transition_to(RecoveryPhase::RECONNECTING, reason, /*force_from_degraded=*/true);
 }
 
 void Worker_manager::handle_node_shutdown(uint8_t reason)
@@ -2176,13 +2306,33 @@ void Worker_manager::mark_recovery_completion_kind_template_refresh()
     }
 }
 
-void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) {
+uint16_t Worker_manager::next_session_auth_retry_delay_seconds() const
+{
+    // m_session_auth_fail_count is 1-based by the time this is consulted
+    // (incremented before the check in both call sites), matching
+    // ExponentialBackoff::calculate_delay_seconds()'s 1-based attempt_count.
+    return static_cast<uint16_t>(m_session_auth_backoff.calculate_delay_seconds(m_session_auth_fail_count));
+}
+
+void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason, bool force_from_degraded) {
     RecoveryPhase old_phase = m_recovery.phase.load(std::memory_order_acquire);
     if (old_phase == new_phase) {
         return;  // Already in this phase — no-op
     }
 
-    if (!is_valid_transition(old_phase, new_phase)) {
+    // Single, narrow, explicitly-audited exception to "DEGRADED_MODE has no
+    // legal way out": the watchdog auto-recovery path (see
+    // exit_recoverable_degraded_mode_if_active()) may transition
+    // DEGRADED_MODE → RECONNECTING, and only that call site may pass
+    // force_from_degraded=true, and only while degraded_mode_recoverable is set
+    // (i.e. the entry was a retry-budget-exhaustion, never signal/fatal-config).
+    const bool is_audited_watchdog_exit =
+        force_from_degraded &&
+        old_phase == RecoveryPhase::DEGRADED_MODE &&
+        new_phase == RecoveryPhase::RECONNECTING &&
+        m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire);
+
+    if (!is_valid_transition(old_phase, new_phase) && !is_audited_watchdog_exit) {
         m_logger->error("[Worker_manager] ⚡ ILLEGAL TRANSITION: {} → {} (reason: {})",
                         phase_name(old_phase), phase_name(new_phase),
                         reason ? reason : "unknown");
@@ -2369,8 +2519,23 @@ void Worker_manager::stop_all_workers()
 {
     std::lock_guard<std::mutex> lock(m_worker_mutex);
 
+    // Header wording depends on WHY workers are being stopped: a normal
+    // self-healing recovery pause (WAITING_TEMPLATE / SESSION_RECOVERY /
+    // RECONNECTING — workers resume automatically once a fresh template/
+    // session arrives) reads very differently from the true DEGRADED_MODE
+    // full-stop (either operator/signal-terminal, or auto-recoverable via the
+    // watchdog). Conflating the two in logs is what previously made a normal,
+    // ~35s reorg-storm recovery look like a permanent failure.
+    const bool truly_degraded = is_terminal_degraded();
+    const bool auto_recoverable = truly_degraded &&
+        m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire);
+    const char* banner = truly_degraded
+        ? (auto_recoverable ? "STOPPING ALL WORKERS (DEGRADED MODE — auto-recoverable, watchdog active)"
+                             : "STOPPING ALL WORKERS (DEGRADED MODE — terminal, operator action required)")
+        : "STOPPING ALL WORKERS (RECOVERY PAUSE — self-healing, will resume automatically)";
+
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
-    m_logger->warn("[Worker_manager] ⚠️  STOPPING ALL WORKERS (DEGRADED MODE)");
+    m_logger->warn("[Worker_manager] ⚠️  {}", banner);
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
     bool session_active = false;
@@ -2434,14 +2599,22 @@ void Worker_manager::stop_all_workers()
     // Clear the recovery gate so the next epoch can re-create workers
     m_recovery_workers_spawned = false;
 
-    if (session_active) {
-        m_logger->warn("[Worker_manager] Mining stopped - waiting for valid template");
+    if (truly_degraded) {
+        if (auto_recoverable) {
+            m_logger->warn("[Worker_manager] Mining halted — no energy spent while auto-recovery watchdog probes the node");
+            m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE (auto-recoverable) — will resume automatically once reachable");
+        } else {
+            m_logger->warn("[Worker_manager] Mining halted — terminal stop, operator action (or process restart) required");
+            m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE (terminal) ENTERED");
+        }
+    } else if (session_active) {
+        m_logger->warn("[Worker_manager] Mining paused - waiting for valid template");
         m_logger->warn("[Worker_manager] Workers stopped and cleared — will be restarted on recovery");
-        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — recovery will be attempted via GET_BLOCK (0xD081)");
+        m_logger->warn("[Worker_manager] ⬆  RECOVERY PAUSE — GET_BLOCK retry in progress (0xD081), self-healing");
     } else {
-        m_logger->warn("[Worker_manager] Mining stopped - session unavailable");
+        m_logger->warn("[Worker_manager] Mining paused - session unavailable");
         m_logger->warn("[Worker_manager] Workers stopped and cleared — waiting for full re-auth or configured failover");
-        m_logger->warn("[Worker_manager] ⬆  DEGRADED MODE ENTERED — no work requests until a fresh session is established");
+        m_logger->warn("[Worker_manager] ⬆  RECOVERY PAUSE — no work requests until a fresh session is established");
     }
     m_logger->warn("[Worker_manager] degraded_enter_total={}", m_degraded_enter_total);
 }
@@ -2738,9 +2911,10 @@ void Worker_manager::check_template_health()
                        push_recent ? "YES" : "NO");
 
         if (!push_recent && degraded_secs >= CONTROLLED_RECOVERY_HARD_STOP_SECONDS) {
-            m_logger->critical("[Worker_manager] Recovery exceeded {}s without live push traffic — entering full stop",
+            m_logger->critical("[Worker_manager] Recovery exceeded {}s without live push traffic — "
+                               "entering auto-recoverable degraded mode",
                                CONTROLLED_RECOVERY_HARD_STOP_SECONDS);
-            enter_terminal_degraded_mode_internal(0, "controlled_recovery_hard_stop");
+            enter_recoverable_degraded_mode("controlled_recovery_hard_stop");
             return;
         }
 
