@@ -94,6 +94,18 @@ public:
     using Session_expired_handler = std::function<void()>;
 
     /**
+     * @brief Recovery-confirmed handler
+     *
+     * Fired when the node re-serves BLOCK_DATA identical to the template already
+     * loaded (same unified height and hashPrevBlock) while the same-height feed
+     * guard suppresses redistributing it to workers. This is a proof-of-liveness
+     * signal for any in-flight recovery: the currently loaded template is still
+     * canonical, so Worker_manager may clear recovery immediately rather than
+     * waiting for a genuinely new template or escalating toward degraded mode.
+     */
+    using Recovery_confirmed_handler = std::function<void()>;
+
+    /**
      * @brief Session authenticated handler
      * @param session_id Session ID (0 if authentication failed)
      */
@@ -219,6 +231,12 @@ public:
      * @param handler Session expired callback
      */
     void set_session_expired_handler(Session_expired_handler handler);
+
+    /**
+     * @brief Set recovery-confirmed handler
+     * @param handler Recovery-confirmed callback
+     */
+    void set_recovery_confirmed_handler(Recovery_confirmed_handler handler);
 
     /**
      * @brief Set session authenticated handler
@@ -457,6 +475,7 @@ private:
     Block_accepted_handler m_block_accepted_handler;
     Recovery_handler m_recovery_handler;
     Session_expired_handler m_session_expired_handler;
+    Recovery_confirmed_handler m_recovery_confirmed_handler;
     Session_authenticated_handler m_session_authenticated_handler;
     Work_ready_handler m_work_ready_handler;
     Session_start_handler m_session_start_handler;

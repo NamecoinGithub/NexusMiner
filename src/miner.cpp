@@ -41,11 +41,20 @@ namespace nexusminer
 		{
 			if (ec) return;
 			m_logger->info("Shutting down NexusMiner (signal={})", signal_number);
+			// Stop the io_context FIRST so Miner::run()'s io_context->run() returns
+			// immediately, no matter what recovery/re-auth/reconnect state the
+			// Worker_manager is currently in (e.g. mid SESSION_RECOVERY, awaiting a
+			// GET_BLOCK, or a queued reconnect timer). Previously, the heavier
+			// enter_terminal_degraded_mode() teardown ran first on this same
+			// io_context thread; if any recovery-path bookkeeping took a while (or a
+			// future change made it block), CTRL+C would appear to hang rather than
+			// exiting promptly. Stopping first guarantees the process can always
+			// exit on signal, independent of recovery state.
+			m_io_context->stop();
 			if (m_worker_manager)
 			{
 				m_worker_manager->enter_terminal_degraded_mode(signal_number);
 			}
-			m_io_context->stop();
 		});
 	}
 

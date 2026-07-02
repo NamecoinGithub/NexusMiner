@@ -47,7 +47,11 @@ void test_session_constants() {
     assert(NodeSessionContext::get_keepalive_safety_divisor() == 4);
     assert(NodeSessionContext::get_max_session_auth_retries() == 10);
     assert(NodeSessionContext::get_base_session_retry_ms() == 1000);
-    assert(NodeSessionContext::get_max_session_retry_ms() == 60000);
+    // Widened from 60000 to 180000 (3 min) so a reorg-storm-driven burst of
+    // session re-auth failures has more headroom to self-resolve before the
+    // controlled retry budget is exhausted. See protocol_constants.hpp
+    // (MAX_SESSION_RETRY_MS) and Worker_manager::next_session_auth_retry_delay_seconds().
+    assert(NodeSessionContext::get_max_session_retry_ms() == 180000);
 
     std::cout << "Session constants test passed!" << std::endl;
 }

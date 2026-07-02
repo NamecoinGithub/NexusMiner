@@ -46,7 +46,16 @@ enum class RecoveryPhase : uint8_t {
     WAITING_TEMPLATE, // Waiting for new template; workers keep running
     SESSION_RECOVERY, // Authoritative session restoration / re-auth in progress
     RECONNECTING,     // TCP reconnect in progress
-    DEGRADED_MODE,    // Terminal full-stop (signal-driven shutdown path)
+    DEGRADED_MODE,    // Full-stop: mining halted, no energy spent while unresolved.
+                      // Two distinct entry classes share this phase:
+                      //  - Operator/fatal (signal, no-failover node shutdown, invalid
+                      //    endpoint config): truly terminal, requires operator/process
+                      //    restart. RecoveryContext::degraded_mode_recoverable is false.
+                      //  - Retry-budget-exhausted (session re-auth / recovery window
+                      //    ran out of controlled attempts): degraded_mode_recoverable is
+                      //    true, and a low-frequency watchdog keeps probing the node so
+                      //    the miner can resume automatically once it is reachable again,
+                      //    without looping mining energy in the meantime.
 };
 
 struct RecoveryContext {
@@ -72,6 +81,15 @@ struct RecoveryContext {
     std::chrono::steady_clock::time_point reconnect_started_at{};
     std::atomic<int> degraded_signal{0};
 
+    // True only while DEGRADED_MODE was entered because a controlled retry
+    // budget was exhausted (session re-auth / recovery window). When true, a
+    // watchdog silently keeps probing the node, and connectivity/session
+    // restoration observed via any path (watchdog probe, in-band re-auth,
+    // work-ready) is permitted to transition back out of DEGRADED_MODE via
+    // exit_recoverable_degraded_mode_if_active() (see
+    // Worker_manager::transition_to's force_from_degraded parameter).
+    // Never set for signal-driven or fatal-config terminal entries.
+    std::atomic<bool> degraded_mode_recoverable{false};
 };
 
 class Worker_manager : public std::enable_shared_from_this<Worker_manager>
@@ -168,15 +186,47 @@ private:
     /// guard from check_template_health() when a valid template exists but is_degraded() is set.
     void clear_recovery_state();
 
+    /// Called when Solo's same-height feed guard suppresses a re-feed because the node
+    /// re-served BLOCK_DATA identical to the template already loaded (same unified height
+    /// AND hashPrevBlock). This proves the currently-loaded template is still canonical,
+    /// even though no re-distribution to workers occurred, so any in-flight recovery can
+    /// be cleared immediately via clear_recovery_state() instead of waiting for a
+    /// genuinely new tip or escalating toward degraded mode. A no-op when recovery is
+    /// not active. Safe to call unconditionally — clear_recovery_state() re-validates
+    /// template/session preconditions before actually clearing.
+    void handle_recovery_confirmed(const char* reason);
+
     void retry_connect(network::Endpoint const& wallet_endpoint, bool force_transport_reset = false);
     void enter_terminal_degraded_mode_internal(int signal_number, const char* reason);
     void handle_node_shutdown(uint8_t reason);
 
+    // ── Auto-recoverable degraded mode (retry-budget-exhausted only) ─────────
+    /// Enters DEGRADED_MODE (mining fully stopped — no wasted energy) for a
+    /// *retry-budget-exhausted* reason only (never for signal/fatal-config
+    /// reasons, which must keep using enter_terminal_degraded_mode_internal()
+    /// unchanged). Marks the entry as recoverable and engages a slow,
+    /// exponentially-backed-off watchdog that periodically retries the
+    /// connection with no operator interaction required. A no-op if a real
+    /// terminal stop (signal, fatal config) is already in progress.
+    void enter_recoverable_degraded_mode(const char* reason);
+    void schedule_degraded_watchdog();
+    void run_degraded_watchdog_probe(uint64_t token);
+    /// Called from the session-authenticated success path when a fresh,
+    /// valid session is established while in an auto-recoverable DEGRADED_MODE.
+    /// Cancels the watchdog and transitions back to RECONNECTING so the
+    /// normal recovery machinery (work-ready / template handlers) takes over.
+    void exit_recoverable_degraded_mode_if_active(const char* reason);
+    uint16_t next_session_auth_retry_delay_seconds() const;
+
     // ── State machine transition API ───────────────────────────────────────────
-    /// Transition to a new RecoveryPhase.  Logs the transition, validates legality
-    /// (in debug builds: asserts; in release: logs error and returns without change),
-    /// runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
-    void transition_to(RecoveryPhase new_phase, const char* reason = nullptr);
+    /// Transition to a new RecoveryPhase. Logs the transition and validates legality
+    /// (in debug builds: asserts; in release builds: logs an error and proceeds),
+    /// then runs on_phase_exit() for the old phase and on_phase_enter() for the new one.
+    /// force_from_degraded must only be passed as true by
+    /// exit_recoverable_degraded_mode_if_active() — it is the single, narrow,
+    /// explicitly-audited exception to "DEGRADED_MODE has no legal way out"
+    /// used for the watchdog auto-recovery path.
+    void transition_to(RecoveryPhase new_phase, const char* reason = nullptr, bool force_from_degraded = false);
     static bool is_valid_transition(RecoveryPhase from, RecoveryPhase to);
     void on_phase_enter(RecoveryPhase phase);
     void on_phase_exit(RecoveryPhase phase);
@@ -229,6 +279,11 @@ private:
     uint64_t m_degraded_enter_total{0};
     uint64_t m_degraded_exit_total{0};
     uint64_t m_time_in_degraded_ms{0};
+    // Count of recovery-confirmed signals (same-tip reconfirmations) that actually
+    // resulted in clear_recovery_state() clearing an active recovery. Diagnostic
+    // only — helps distinguish "recovery cleared via reconfirmation" from "cleared
+    // via a genuinely new template feed" in operator logs.
+    uint64_t m_recovery_confirmed_clears_total{0};
 
     // Bug 5 fix: Track last GET_BLOCK request time to prevent burst duplicate
     // requests from forced retry timer (100-250ms) and health monitor (5s cycle)
@@ -255,6 +310,19 @@ private:
     util::ExponentialBackoff m_session_auth_backoff{
         protocol::ProtocolConstants::BASE_SESSION_RETRY_MS,
         protocol::ProtocolConstants::MAX_SESSION_RETRY_MS
+    };
+
+    // ── Auto-recoverable degraded-mode watchdog state ─────────────────────────
+    // Only active while m_recovery.degraded_mode_recoverable is true. Drives a
+    // slow, capped-exponential reconnect probe loop so the miner can resume
+    // automatically after the controlled retry budget was exhausted, without
+    // spinning CPU/network in a tight loop and without mining (no energy is
+    // spent while the node/network is unreachable).
+    std::shared_ptr<asio::steady_timer> m_degraded_watchdog_timer{};
+    uint64_t m_degraded_watchdog_token{0};
+    util::ExponentialBackoffWithState m_degraded_watchdog_backoff{
+        protocol::ProtocolConstants::DEGRADED_WATCHDOG_BASE_SECONDS,
+        protocol::ProtocolConstants::DEGRADED_WATCHDOG_MAX_SECONDS
     };
 
     // ── Session generation counter ──────────────────────────────────────────

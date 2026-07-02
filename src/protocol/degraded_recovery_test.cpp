@@ -1356,6 +1356,69 @@ void test_session_status_cooldown_only_advances_after_successful_queue()
                       successful_retry && no_longer_due);
 }
 
+// ============================================================================
+// Test 28: DEGRADED_MODE watchdog auto-recovery escape hatch is narrowly scoped
+//
+// Mirrors Worker_manager::transition_to()'s force_from_degraded exception:
+// DEGRADED_MODE has no legal way out UNLESS the caller passes
+// force_from_degraded=true AND the entry was flagged recoverable (i.e. it was
+// a retry-budget-exhaustion entry, never a signal/fatal-config entry). This
+// guards the exact invariant that makes the watchdog auto-recovery safe: it
+// can only ever undo a DEGRADED_MODE entry it was explicitly allowed to.
+// ============================================================================
+enum class MirrorPhase : uint8_t { HEALTHY, WAITING_TEMPLATE, RECONNECTING, DEGRADED_MODE };
+
+static bool mirror_is_valid_transition(MirrorPhase from, MirrorPhase to,
+                                        bool force_from_degraded, bool degraded_mode_recoverable) {
+    // Simplified test mirror: this intentionally only validates the
+    // DEGRADED_MODE exit invariant (the new force_from_degraded escape
+    // hatch). It is NOT a full mirror of Worker_manager::is_valid_transition()
+    // — the final `return true` fallthrough deliberately treats every other
+    // (from, to) pair as legal since this test cares only about whether
+    // DEGRADED_MODE can/cannot be exited under various flag combinations.
+    if (from == to) return true;
+    if (from == MirrorPhase::DEGRADED_MODE) {
+        return force_from_degraded &&
+               to == MirrorPhase::RECONNECTING &&
+               degraded_mode_recoverable;
+    }
+    if (to == MirrorPhase::DEGRADED_MODE) return true;
+    return true;  // other transitions not relevant to this invariant
+}
+
+void test_degraded_mode_watchdog_exit_is_narrowly_scoped() {
+    std::cout << "\nTest 28: DEGRADED_MODE watchdog-exit escape hatch is narrowly scoped\n";
+
+    // Without force_from_degraded, DEGRADED_MODE remains a dead end — even if
+    // (hypothetically) marked recoverable.
+    print_test_result("DEGRADED_MODE → RECONNECTING blocked without force_from_degraded",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
+                                     /*force_from_degraded=*/false, /*recoverable=*/true));
+
+    // force_from_degraded alone (without the recoverable flag) must NOT open
+    // the escape hatch — this is what protects operator-signal / fatal-config
+    // terminal entries (which never set degraded_mode_recoverable) from ever
+    // being silently reopened.
+    print_test_result("DEGRADED_MODE → RECONNECTING blocked when NOT flagged recoverable",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
+                                     /*force_from_degraded=*/true, /*recoverable=*/false));
+
+    // Only the exact combination — force_from_degraded AND recoverable — may
+    // exit DEGRADED_MODE, and only to RECONNECTING (never straight to HEALTHY,
+    // so normal work-ready/template recovery machinery still runs).
+    print_test_result("DEGRADED_MODE → RECONNECTING allowed only when both flags set",
+        mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
+                                    /*force_from_degraded=*/true, /*recoverable=*/true));
+
+    print_test_result("DEGRADED_MODE → HEALTHY still blocked even with both flags set",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::HEALTHY,
+                                     /*force_from_degraded=*/true, /*recoverable=*/true));
+
+    // Any phase may still enter DEGRADED_MODE (unchanged invariant).
+    print_test_result("WAITING_TEMPLATE → DEGRADED_MODE remains legal",
+        mirror_is_valid_transition(MirrorPhase::WAITING_TEMPLATE, MirrorPhase::DEGRADED_MODE,
+                                    /*force_from_degraded=*/false, /*recoverable=*/false));
+}
 
 int main() {
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
@@ -1394,6 +1457,7 @@ int main() {
     test_recovery_phase_mutual_exclusivity();
     test_epoch0_recovery_escalation_on_suppressed_get_block();
     test_session_status_cooldown_only_advances_after_successful_queue();
+    test_degraded_mode_watchdog_exit_is_narrowly_scoped();
 
     std::cout << "\n═══════════════════════════════════════════════════════════\n";
     std::cout << "Test Results: " << tests_passed << "/" << tests_run << " passed";

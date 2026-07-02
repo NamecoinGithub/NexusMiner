@@ -215,6 +215,12 @@ add_nexusminer_test(NAME post_adoption_suppression_test
     LINK_LIBS   protocol LLP LLC network asio spdlog ${OPENSSL_LIBRARIES}
     INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
 
+add_nexusminer_test(NAME same_tip_reconfirmation_test
+    SOURCES     same_tip_reconfirmation_test.cpp
+                ${CMAKE_SOURCE_DIR}/src/miner_keys.cpp
+    LINK_LIBS   protocol LLP LLC network asio spdlog ${OPENSSL_LIBRARIES}
+    INCLUDE_DIRS ${_LLP_INC} ${_LLC_INC})
+
 # --- Packet router ---
 add_nexusminer_test(NAME packet_router_test
     SOURCES     packet_router_test.cpp

@@ -559,6 +559,12 @@ void NodeSession::apply_protocol_handlers(LaneSlot slot)
         }
     });
 
+    protocol->set_recovery_confirmed_handler([this]() {
+        if (m_recovery_confirmed_handler) {
+            m_recovery_confirmed_handler();
+        }
+    });
+
     protocol->set_session_authenticated_handler([this, slot](protocol::SessionId sid) {
         mark_lane_authenticated(slot, sid);
         if (m_session_authenticated_handler) {
@@ -795,6 +801,12 @@ void NodeSession::set_recovery_initiated_handler(Recovery_handler handler)
 void NodeSession::set_session_expired_handler(Session_expired_handler handler)
 {
     m_session_expired_handler = std::move(handler);
+    rewire_protocol_handlers();
+}
+
+void NodeSession::set_recovery_confirmed_handler(Recovery_confirmed_handler handler)
+{
+    m_recovery_confirmed_handler = std::move(handler);
     rewire_protocol_handlers();
 }
 
