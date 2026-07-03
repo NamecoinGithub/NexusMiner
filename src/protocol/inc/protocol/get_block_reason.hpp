@@ -56,6 +56,9 @@ enum class GetBlockReason : uint8_t {
     INITIAL_REQUEST,           ///< First template after connect/auth
     TEMPLATE_FEED_FAILURE,     ///< Template distribution to workers failed
     BLOCK_REJECTED,            ///< Block was rejected by the node; need a fresh template immediately
+
+    // ── Dead-on-arrival template detection (Worker_manager layer) ───────────
+    PRIME_ORIGIN_TOO_LOW,      ///< Prime-channel ProofHash() below bnPrimeMinOrigins; template can never validate
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +144,13 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         // the height guard needs bypassing (burst guard won't fire on first call).
         case GetBlockReason::BLOCK_REJECTED:
 
+        // Dead-on-arrival template: the height hasn't changed, but this exact
+        // template can never produce a block the node will accept (its
+        // ProofHash() is fixed below bnPrimeMinOrigins). Bypass height dedup
+        // so the miner doesn't get stuck re-requesting a template at the
+        // same height indefinitely.
+        case GetBlockReason::PRIME_ORIGIN_TOO_LOW:
+
             return true;
 
         default:
@@ -188,6 +198,7 @@ inline const char* reason_name(GetBlockReason reason)
         case GetBlockReason::INITIAL_REQUEST:         return "initial_request";
         case GetBlockReason::TEMPLATE_FEED_FAILURE:   return "template_feed_failure";
         case GetBlockReason::BLOCK_REJECTED:          return "block_rejected";
+        case GetBlockReason::PRIME_ORIGIN_TOO_LOW:    return "prime_origin_too_low";
     }
     return "unknown";
 }
