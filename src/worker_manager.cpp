@@ -29,6 +29,7 @@
 #include "protocol/protocol_constants.hpp"
 #include "protocol/session_status_policy.hpp"
 #include "protocol/get_block_reason.hpp"
+#include "worker/block_header_utils.hpp"
 #include <asio/steady_timer.hpp>
 #include <variant>
 #include <algorithm>
@@ -204,6 +205,24 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                        current_generation, shutdown_generation);
                         return;
                     }
+                }
+
+                // Dead-on-arrival gate: mirrors the node's Prime-channel origins
+                // check (Block::VerifyWork(): nVersion >= 5 && ProofHash() <
+                // bnPrimeMinOrigins => "prime origins below 1016-bits"). This is a
+                // per-TEMPLATE property (depends only on fixed header fields, never
+                // on nNonce), so it is evaluated once here -- before any worker is
+                // handed the template -- rather than per solved candidate. Without
+                // this gate the miner can spend minutes mining a Prime chain that
+                // satisfies every miner-side check yet is unconditionally rejected
+                // by the node's Check() for a reason unrelated to difficulty.
+                if (!HasSufficientPrimeOrigins(block)) {
+                    m_logger->error("[Worker_manager] ⚠️  Template DEAD ON ARRIVAL: height={} channel={} "
+                                    "reason=PRIME_ORIGIN_TOO_LOW (ProofHash below bnPrimeMinOrigins / 1016-bits) "
+                                    "-- discarding without mining, requesting fresh template",
+                                    block.nHeight, block.nChannel);
+                    retry_template_request(protocol::GetBlockReason::PRIME_ORIGIN_TOO_LOW);
+                    return;
                 }
 
                 std::size_t worker_count = 0;
