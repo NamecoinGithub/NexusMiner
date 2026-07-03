@@ -3,9 +3,9 @@ name: CMake Build
 on:
   workflow_dispatch:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, MINER ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, MINER ]
 
 env:
   CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache

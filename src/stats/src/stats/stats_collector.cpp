@@ -34,6 +34,7 @@ Global Collector::get_global_stats() const
         m_global_counters.m_accepted_shares,
         m_global_counters.m_rejected_shares,
         m_global_counters.m_connection_retries,
+        m_global_counters.m_discarded_blocks,
         m_global_state.m_degraded_mode
     };
 }
