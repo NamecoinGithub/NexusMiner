@@ -1357,67 +1357,64 @@ void test_session_status_cooldown_only_advances_after_successful_queue()
 }
 
 // ============================================================================
-// Test 28: DEGRADED_MODE watchdog auto-recovery escape hatch is narrowly scoped
+// Test 28: DEGRADED_RECOVERABLE watchdog auto-recovery exit is narrowly scoped
 //
-// Mirrors Worker_manager::transition_to()'s force_from_degraded exception:
-// DEGRADED_MODE has no legal way out UNLESS the caller passes
-// force_from_degraded=true AND the entry was flagged recoverable (i.e. it was
-// a retry-budget-exhaustion entry, never a signal/fatal-config entry). This
-// guards the exact invariant that makes the watchdog auto-recovery safe: it
-// can only ever undo a DEGRADED_MODE entry it was explicitly allowed to.
+// Mirrors Worker_manager::is_valid_transition()'s DEGRADED_TERMINAL /
+// DEGRADED_RECOVERABLE handling (see worker_manager.cpp). The former
+// force_from_degraded bypass parameter on transition_to() is gone: the two
+// degraded flavors are now first-class states, and every legal exit --
+// including watchdog auto-recovery -- is an ordinary, unconditionally-checked
+// table entry. This test guards the exact invariant that makes watchdog
+// auto-recovery safe: DEGRADED_RECOVERABLE can only ever exit to RECONNECTING
+// (auto-recovery) or DEGRADED_TERMINAL (an operator/fatal signal escalating
+// it), and DEGRADED_TERMINAL itself has no legal exit at all.
 // ============================================================================
-enum class MirrorPhase : uint8_t { HEALTHY, WAITING_TEMPLATE, RECONNECTING, DEGRADED_MODE };
+enum class MirrorPhase : uint8_t {
+    HEALTHY, WAITING_TEMPLATE, RECONNECTING, DEGRADED_TERMINAL, DEGRADED_RECOVERABLE
+};
 
-static bool mirror_is_valid_transition(MirrorPhase from, MirrorPhase to,
-                                        bool force_from_degraded, bool degraded_mode_recoverable) {
-    // Simplified test mirror: this intentionally only validates the
-    // DEGRADED_MODE exit invariant (the new force_from_degraded escape
-    // hatch). It is NOT a full mirror of Worker_manager::is_valid_transition()
-    // — the final `return true` fallthrough deliberately treats every other
-    // (from, to) pair as legal since this test cares only about whether
-    // DEGRADED_MODE can/cannot be exited under various flag combinations.
+static bool mirror_is_valid_transition(MirrorPhase from, MirrorPhase to) {
+    // Simplified test mirror of Worker_manager::is_valid_transition()'s
+    // degraded-phase handling. Not a full mirror -- the final `return true`
+    // fallthrough deliberately treats every other (from, to) pair as legal
+    // since this test cares only about the degraded-phase invariants.
     if (from == to) return true;
-    if (from == MirrorPhase::DEGRADED_MODE) {
-        return force_from_degraded &&
-               to == MirrorPhase::RECONNECTING &&
-               degraded_mode_recoverable;
+    if (from == MirrorPhase::DEGRADED_TERMINAL) return false;  // truly terminal, no legal exit ever
+    if (from == MirrorPhase::DEGRADED_RECOVERABLE) {
+        return to == MirrorPhase::DEGRADED_TERMINAL || to == MirrorPhase::RECONNECTING;
     }
-    if (to == MirrorPhase::DEGRADED_MODE) return true;
+    if (to == MirrorPhase::DEGRADED_TERMINAL || to == MirrorPhase::DEGRADED_RECOVERABLE) return true;
     return true;  // other transitions not relevant to this invariant
 }
 
 void test_degraded_mode_watchdog_exit_is_narrowly_scoped() {
-    std::cout << "\nTest 28: DEGRADED_MODE watchdog-exit escape hatch is narrowly scoped\n";
+    std::cout << "\nTest 28: DEGRADED_RECOVERABLE watchdog-exit is narrowly scoped\n";
 
-    // Without force_from_degraded, DEGRADED_MODE remains a dead end — even if
-    // (hypothetically) marked recoverable.
-    print_test_result("DEGRADED_MODE → RECONNECTING blocked without force_from_degraded",
-        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
-                                     /*force_from_degraded=*/false, /*recoverable=*/true));
+    // DEGRADED_TERMINAL is a true dead end -- no transition out, ever, not
+    // even to RECONNECTING.
+    print_test_result("DEGRADED_TERMINAL -> RECONNECTING is always blocked",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_TERMINAL, MirrorPhase::RECONNECTING));
+    print_test_result("DEGRADED_TERMINAL -> HEALTHY is always blocked",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_TERMINAL, MirrorPhase::HEALTHY));
 
-    // force_from_degraded alone (without the recoverable flag) must NOT open
-    // the escape hatch — this is what protects operator-signal / fatal-config
-    // terminal entries (which never set degraded_mode_recoverable) from ever
-    // being silently reopened.
-    print_test_result("DEGRADED_MODE → RECONNECTING blocked when NOT flagged recoverable",
-        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
-                                     /*force_from_degraded=*/true, /*recoverable=*/false));
+    // DEGRADED_RECOVERABLE's only legal exits are RECONNECTING (watchdog
+    // auto-recovery) and DEGRADED_TERMINAL (an operator/fatal signal
+    // escalating it) -- never straight to HEALTHY or WAITING_TEMPLATE, so
+    // normal work-ready/template recovery machinery still runs afterward.
+    print_test_result("DEGRADED_RECOVERABLE -> RECONNECTING is legal (auto-recovery)",
+        mirror_is_valid_transition(MirrorPhase::DEGRADED_RECOVERABLE, MirrorPhase::RECONNECTING));
+    print_test_result("DEGRADED_RECOVERABLE -> DEGRADED_TERMINAL is legal (signal escalation)",
+        mirror_is_valid_transition(MirrorPhase::DEGRADED_RECOVERABLE, MirrorPhase::DEGRADED_TERMINAL));
+    print_test_result("DEGRADED_RECOVERABLE -> HEALTHY is blocked",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_RECOVERABLE, MirrorPhase::HEALTHY));
+    print_test_result("DEGRADED_RECOVERABLE -> WAITING_TEMPLATE is blocked",
+        !mirror_is_valid_transition(MirrorPhase::DEGRADED_RECOVERABLE, MirrorPhase::WAITING_TEMPLATE));
 
-    // Only the exact combination — force_from_degraded AND recoverable — may
-    // exit DEGRADED_MODE, and only to RECONNECTING (never straight to HEALTHY,
-    // so normal work-ready/template recovery machinery still runs).
-    print_test_result("DEGRADED_MODE → RECONNECTING allowed only when both flags set",
-        mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::RECONNECTING,
-                                    /*force_from_degraded=*/true, /*recoverable=*/true));
-
-    print_test_result("DEGRADED_MODE → HEALTHY still blocked even with both flags set",
-        !mirror_is_valid_transition(MirrorPhase::DEGRADED_MODE, MirrorPhase::HEALTHY,
-                                     /*force_from_degraded=*/true, /*recoverable=*/true));
-
-    // Any phase may still enter DEGRADED_MODE (unchanged invariant).
-    print_test_result("WAITING_TEMPLATE → DEGRADED_MODE remains legal",
-        mirror_is_valid_transition(MirrorPhase::WAITING_TEMPLATE, MirrorPhase::DEGRADED_MODE,
-                                    /*force_from_degraded=*/false, /*recoverable=*/false));
+    // Any phase may still enter either degraded flavor (unchanged invariant).
+    print_test_result("WAITING_TEMPLATE -> DEGRADED_TERMINAL remains legal",
+        mirror_is_valid_transition(MirrorPhase::WAITING_TEMPLATE, MirrorPhase::DEGRADED_TERMINAL));
+    print_test_result("WAITING_TEMPLATE -> DEGRADED_RECOVERABLE remains legal",
+        mirror_is_valid_transition(MirrorPhase::WAITING_TEMPLATE, MirrorPhase::DEGRADED_RECOVERABLE));
 }
 
 int main() {

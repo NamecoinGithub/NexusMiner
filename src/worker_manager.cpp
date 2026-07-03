@@ -1297,17 +1297,13 @@ void Worker_manager::enter_terminal_degraded_mode_internal(int signal_number, co
         return;
     }
 
-    // A true terminal entry always wins over any in-flight auto-recoverable
-    // watchdog: mark this entry as NOT recoverable and cancel the watchdog so
-    // it never fires a reconnect probe after process shutdown has begun.
-    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
-    ++m_degraded_watchdog_token;
-    if (m_degraded_watchdog_timer) {
-        m_degraded_watchdog_timer->cancel();
-    }
-
+    // Record the triggering signal first, then transition. A true terminal
+    // entry always wins over any in-flight auto-recoverable watchdog: if we
+    // are currently DEGRADED_RECOVERABLE, this transition's
+    // on_phase_exit(DEGRADED_RECOVERABLE) cancels the watchdog automatically —
+    // no separate manual bookkeeping needed at this call site.
     m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
-    transition_to(RecoveryPhase::DEGRADED_MODE, reason);
+    transition_to(RecoveryPhase::DEGRADED_TERMINAL, reason);
     if (signal_number != 0) {
         m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
     } else {
@@ -1324,7 +1320,7 @@ void Worker_manager::enter_recoverable_degraded_mode(const char* reason)
     if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
         return;
     }
-    if (is_terminal_degraded() && m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+    if (is_degraded_recoverable()) {
         // Already in an auto-recoverable degraded mode (e.g. a second retry
         // budget exhausted while the watchdog is already probing) — just log.
         m_logger->warn("[Worker_manager] Auto-recoverable degraded mode already active (reason: {})",
@@ -1332,31 +1328,28 @@ void Worker_manager::enter_recoverable_degraded_mode(const char* reason)
         return;
     }
 
-    m_recovery.degraded_mode_recoverable.store(true, std::memory_order_release);
-    transition_to(RecoveryPhase::DEGRADED_MODE, reason);
+    // on_phase_enter(DEGRADED_RECOVERABLE) resets the watchdog backoff and
+    // engages the watchdog — no separate call needed here.
+    transition_to(RecoveryPhase::DEGRADED_RECOVERABLE, reason);
 
     // Mining fully stops — this is the whole point of "Full Stop Degraded
     // Mode has a purpose": no hashrate/energy is spent while the node/network
     // is unreachable. stop_all_workers() (not stop()) keeps the TCP/timer
-    // infrastructure alive so the watchdog below can actually reconnect.
+    // infrastructure alive so the watchdog can actually reconnect.
     stop_all_workers();
 
-    m_degraded_watchdog_backoff.reset();
     m_logger->critical("[Worker_manager] DEGRADED MODE entered ({}) — mining halted (no energy spent). "
                        "Auto-recovery watchdog engaged; no operator action required unless the node "
                        "remains unreachable for an extended period.", reason ? reason : "unknown");
-    schedule_degraded_watchdog();
 }
 
 void Worker_manager::schedule_degraded_watchdog()
 {
-    if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
-        return;
-    }
-    if (!m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
-        return;  // Recovered (or superseded by a real terminal stop) — nothing to schedule.
-    }
-    if (!m_io_context) {
+    // Only ever called from on_phase_enter(DEGRADED_RECOVERABLE) or from a
+    // probe rescheduling itself, so the phase itself is the sole authority on
+    // whether the watchdog should still be running (no separate recoverable
+    // flag to keep in sync).
+    if (!is_degraded_recoverable() || !m_io_context) {
         return;
     }
 
@@ -1382,8 +1375,7 @@ void Worker_manager::run_degraded_watchdog_probe(uint64_t token)
     if (token != m_degraded_watchdog_token) {
         return;  // Superseded by a newer probe / recovery / terminal stop.
     }
-    if (m_terminal_stop_requested.load(std::memory_order_acquire) ||
-        !m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+    if (!is_degraded_recoverable()) {
         return;
     }
 
@@ -1396,32 +1388,27 @@ void Worker_manager::run_degraded_watchdog_probe(uint64_t token)
 
     // Always reschedule at the (advanced) backoff interval. If the probe
     // above succeeds, exit_recoverable_degraded_mode_if_active() cancels the
-    // watchdog via the token bump, so this reschedule becomes a no-op.
+    // watchdog via on_phase_exit(DEGRADED_RECOVERABLE)'s token bump, so this
+    // reschedule becomes a no-op.
     schedule_degraded_watchdog();
 }
 
 void Worker_manager::exit_recoverable_degraded_mode_if_active(const char* reason)
 {
-    if (!is_terminal_degraded() || !m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire)) {
+    if (!is_degraded_recoverable()) {
         return;
     }
 
     m_logger->warn("[Worker_manager] Degraded-mode watchdog: connectivity restored ({}) — "
                    "exiting auto-recoverable degraded mode", reason ? reason : "unknown");
 
-    ++m_degraded_watchdog_token;  // Cancel any pending probe reschedule.
-    if (m_degraded_watchdog_timer) {
-        m_degraded_watchdog_timer->cancel();
-    }
-    m_degraded_watchdog_backoff.reset();
-
     // Hand off to the normal reconnect machinery: work-ready / session
     // handlers already know how to drive RECONNECTING → WAITING_TEMPLATE →
-    // HEALTHY once a template arrives.
-    transition_to(RecoveryPhase::RECONNECTING, reason, true);
-
-    // Clear the recoverable flag only after transition_to() has observed it.
-    m_recovery.degraded_mode_recoverable.store(false, std::memory_order_release);
+    // HEALTHY once a template arrives. This is now an ordinary, unconditionally
+    // legal transition table entry (see is_valid_transition()) rather than a
+    // narrowly-audited bypass; on_phase_exit(DEGRADED_RECOVERABLE) cancels the
+    // watchdog as part of the same transition.
+    transition_to(RecoveryPhase::RECONNECTING, reason);
 }
 
 void Worker_manager::handle_node_shutdown(uint8_t reason)
@@ -2198,19 +2185,36 @@ void Worker_manager::send_session_status_if_due()
 
 const char* Worker_manager::phase_name(RecoveryPhase phase) {
     switch (phase) {
-        case RecoveryPhase::HEALTHY:          return "HEALTHY";
-        case RecoveryPhase::WAITING_TEMPLATE: return "WAITING_TEMPLATE";
-        case RecoveryPhase::SESSION_RECOVERY: return "SESSION_RECOVERY";
-        case RecoveryPhase::RECONNECTING:     return "RECONNECTING";
-        case RecoveryPhase::DEGRADED_MODE:    return "DEGRADED_MODE";
+        case RecoveryPhase::HEALTHY:              return "HEALTHY";
+        case RecoveryPhase::WAITING_TEMPLATE:     return "WAITING_TEMPLATE";
+        case RecoveryPhase::SESSION_RECOVERY:     return "SESSION_RECOVERY";
+        case RecoveryPhase::RECONNECTING:         return "RECONNECTING";
+        case RecoveryPhase::DEGRADED_TERMINAL:    return "DEGRADED_TERMINAL";
+        case RecoveryPhase::DEGRADED_RECOVERABLE: return "DEGRADED_RECOVERABLE";
     }
     return "UNKNOWN";
 }
 
 bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
     if (from == to) return true;
-    if (from == RecoveryPhase::DEGRADED_MODE) return false;
-    if (to == RecoveryPhase::DEGRADED_MODE) return true;
+
+    // DEGRADED_TERMINAL is genuinely terminal — no legal exit, ever.
+    if (from == RecoveryPhase::DEGRADED_TERMINAL) return false;
+
+    // DEGRADED_RECOVERABLE has exactly two legal exits: an operator/fatal
+    // signal escalates it to the truly-terminal state (never silently
+    // discarded — see enter_terminal_degraded_mode_internal()), or the
+    // watchdog observes restored connectivity and hands off to RECONNECTING
+    // (see exit_recoverable_degraded_mode_if_active()). This replaces the
+    // former force_from_degraded bypass parameter with an ordinary,
+    // unconditionally-checked table entry.
+    if (from == RecoveryPhase::DEGRADED_RECOVERABLE) {
+        return to == RecoveryPhase::DEGRADED_TERMINAL || to == RecoveryPhase::RECONNECTING;
+    }
+
+    // Any other phase may enter either flavor of full-stop degraded mode.
+    if (to == RecoveryPhase::DEGRADED_TERMINAL || to == RecoveryPhase::DEGRADED_RECOVERABLE) return true;
+
     switch (from) {
         case RecoveryPhase::HEALTHY:
             return to == RecoveryPhase::WAITING_TEMPLATE ||
@@ -2227,6 +2231,8 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
             return to == RecoveryPhase::HEALTHY ||
                    to == RecoveryPhase::WAITING_TEMPLATE;
     }
+    // DEGRADED_TERMINAL and DEGRADED_RECOVERABLE are both handled above
+    // (before this switch) and never reach here.
     return false;
 }
 
@@ -2237,6 +2243,17 @@ void Worker_manager::on_phase_exit(RecoveryPhase old_phase) {
             break;
         case RecoveryPhase::RECONNECTING:
             m_recovery.reconnect_started_at = {};
+            break;
+        case RecoveryPhase::DEGRADED_RECOVERABLE:
+            // Cancel the watchdog unconditionally on every exit from this phase
+            // (whether to RECONNECTING via auto-recovery, or to DEGRADED_TERMINAL
+            // via an operator/fatal signal) — the watchdog's lifetime is now tied
+            // directly to phase membership rather than a separately-maintained flag.
+            ++m_degraded_watchdog_token;
+            if (m_degraded_watchdog_timer) {
+                m_degraded_watchdog_timer->cancel();
+            }
+            m_degraded_watchdog_backoff.reset();
             break;
         default:
             break;
@@ -2282,12 +2299,23 @@ void Worker_manager::on_phase_enter(RecoveryPhase new_phase) {
             m_recovery.reconnect_started_at = std::chrono::steady_clock::now();
             break;
         }
-        case RecoveryPhase::DEGRADED_MODE: {
+        case RecoveryPhase::DEGRADED_TERMINAL: {
             m_stats_collector->set_degraded_mode(true);
+            break;
+        }
+        case RecoveryPhase::DEGRADED_RECOVERABLE: {
+            m_stats_collector->set_degraded_mode(true);
+            // Engaging the watchdog here (rather than at each of the multiple
+            // call sites that can enter this phase) guarantees it is armed on
+            // every legal path into DEGRADED_RECOVERABLE, with no separate
+            // bookkeeping to forget.
+            m_degraded_watchdog_backoff.reset();
+            schedule_degraded_watchdog();
             break;
         }
     }
 }
+
 
 bool Worker_manager::should_reset_stats_on_recovery_completion() const
 {
@@ -2333,25 +2361,13 @@ uint16_t Worker_manager::next_session_auth_retry_delay_seconds() const
     return static_cast<uint16_t>(m_session_auth_backoff.calculate_delay_seconds(m_session_auth_fail_count));
 }
 
-void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason, bool force_from_degraded) {
+void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason) {
     RecoveryPhase old_phase = m_recovery.phase.load(std::memory_order_acquire);
     if (old_phase == new_phase) {
         return;  // Already in this phase — no-op
     }
 
-    // Single, narrow, explicitly-audited exception to "DEGRADED_MODE has no
-    // legal way out": the watchdog auto-recovery path (see
-    // exit_recoverable_degraded_mode_if_active()) may transition
-    // DEGRADED_MODE → RECONNECTING, and only that call site may pass
-    // force_from_degraded=true, and only while degraded_mode_recoverable is set
-    // (i.e. the entry was a retry-budget-exhaustion, never signal/fatal-config).
-    const bool is_audited_watchdog_exit =
-        force_from_degraded &&
-        old_phase == RecoveryPhase::DEGRADED_MODE &&
-        new_phase == RecoveryPhase::RECONNECTING &&
-        m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire);
-
-    if (!is_valid_transition(old_phase, new_phase) && !is_audited_watchdog_exit) {
+    if (!is_valid_transition(old_phase, new_phase)) {
         m_logger->error("[Worker_manager] ⚡ ILLEGAL TRANSITION: {} → {} (reason: {})",
                         phase_name(old_phase), phase_name(new_phase),
                         reason ? reason : "unknown");
@@ -2366,7 +2382,8 @@ void Worker_manager::transition_to(RecoveryPhase new_phase, const char* reason, 
     // accumulate total time spent in degraded mode.
     if (new_phase == RecoveryPhase::HEALTHY &&
         old_phase != RecoveryPhase::HEALTHY &&
-        old_phase != RecoveryPhase::DEGRADED_MODE) {
+        old_phase != RecoveryPhase::DEGRADED_TERMINAL &&
+        old_phase != RecoveryPhase::DEGRADED_RECOVERABLE) {
         auto now = std::chrono::steady_clock::now();
         if (m_recovery.degraded_since != std::chrono::steady_clock::time_point{}) {
             auto elapsed_ms = static_cast<uint64_t>(
@@ -2479,13 +2496,14 @@ void Worker_manager::handle_recovery_confirmed(const char* reason)
         return;
     }
 
-    // DEGRADED_MODE (both terminal and auto-recoverable flavors) has its own
-    // narrowly-audited exit paths (enter_terminal_degraded_mode_internal's operator
-    // restart, or exit_recoverable_degraded_mode_if_active()'s connectivity-proof
-    // gate). A same-tip BLOCK_DATA response is not expected to reach this handler
-    // while workers are fully stopped in DEGRADED_MODE (no active GET_BLOCK/BLOCK_DATA
-    // flow), but guard against it anyway rather than risk bypassing that audited exit.
-    if (is_terminal_degraded()) {
+    // DEGRADED_TERMINAL and DEGRADED_RECOVERABLE each have their own audited
+    // exit paths (enter_terminal_degraded_mode_internal's operator restart, or
+    // exit_recoverable_degraded_mode_if_active()'s connectivity-proof gate).
+    // A same-tip BLOCK_DATA response is not expected to reach this handler
+    // while workers are fully stopped in either degraded phase (no active
+    // GET_BLOCK/BLOCK_DATA flow), but guard against it anyway rather than
+    // risk bypassing those audited exits.
+    if (is_degraded_any()) {
         return;
     }
 
@@ -2580,13 +2598,12 @@ void Worker_manager::stop_all_workers()
     // Header wording depends on WHY workers are being stopped: a normal
     // self-healing recovery pause (WAITING_TEMPLATE / SESSION_RECOVERY /
     // RECONNECTING — workers resume automatically once a fresh template/
-    // session arrives) reads very differently from the true DEGRADED_MODE
-    // full-stop (either operator/signal-terminal, or auto-recoverable via the
-    // watchdog). Conflating the two in logs is what previously made a normal,
-    // ~35s reorg-storm recovery look like a permanent failure.
-    const bool truly_degraded = is_terminal_degraded();
-    const bool auto_recoverable = truly_degraded &&
-        m_recovery.degraded_mode_recoverable.load(std::memory_order_acquire);
+    // session arrives) reads very differently from a full-stop degraded phase
+    // (either operator/signal-terminal, or auto-recoverable via the watchdog).
+    // Conflating the two in logs is what previously made a normal, ~35s
+    // reorg-storm recovery look like a permanent failure.
+    const bool auto_recoverable = is_degraded_recoverable();
+    const bool truly_degraded = is_degraded_terminal() || auto_recoverable;
     const char* banner = truly_degraded
         ? (auto_recoverable ? "STOPPING ALL WORKERS (DEGRADED MODE — auto-recoverable, watchdog active)"
                              : "STOPPING ALL WORKERS (DEGRADED MODE — terminal, operator action required)")
