@@ -1857,7 +1857,6 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         return network::Shared_payload{};
     }
 
-
     const auto submit_snapshot = m_height_tracker.GetSnapshot();
     const auto submit_context = capture_submit_context(block_to_submit.nHeight, submit_snapshot.unified_height);
     const auto tracker_channel_tip = submit_snapshot.channel_tip_height.get();
