@@ -1297,11 +1297,12 @@ void Worker_manager::enter_terminal_degraded_mode_internal(int signal_number, co
         return;
     }
 
-    m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
-    // A true terminal entry always wins over any in-flight auto-recoverable
-    // watchdog: if we are currently DEGRADED_RECOVERABLE, this transition's
+    // Record the triggering signal first, then transition. A true terminal
+    // entry always wins over any in-flight auto-recoverable watchdog: if we
+    // are currently DEGRADED_RECOVERABLE, this transition's
     // on_phase_exit(DEGRADED_RECOVERABLE) cancels the watchdog automatically —
     // no separate manual bookkeeping needed at this call site.
+    m_recovery.degraded_signal.store(signal_number, std::memory_order_relaxed);
     transition_to(RecoveryPhase::DEGRADED_TERMINAL, reason);
     if (signal_number != 0) {
         m_logger->critical("[Worker_manager] TERMINAL DEGRADED MODE entered by signal {} — full stop", signal_number);
@@ -2229,11 +2230,9 @@ bool Worker_manager::is_valid_transition(RecoveryPhase from, RecoveryPhase to) {
         case RecoveryPhase::RECONNECTING:
             return to == RecoveryPhase::HEALTHY ||
                    to == RecoveryPhase::WAITING_TEMPLATE;
-        case RecoveryPhase::DEGRADED_TERMINAL:
-        case RecoveryPhase::DEGRADED_RECOVERABLE:
-            // Handled above; unreachable here.
-            return false;
     }
+    // DEGRADED_TERMINAL and DEGRADED_RECOVERABLE are both handled above
+    // (before this switch) and never reach here.
     return false;
 }
 
