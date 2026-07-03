@@ -215,6 +215,16 @@ void Solo::clear_pending_submit_result_state()
     clear_last_submitted_state();
 }
 
+void Solo::note_block_discarded(const std::string& reason)
+{
+    m_logger->critical("[Solo Submit] BLOCK DISCARDED (not submitted — solved work lost): {}", reason);
+    if (m_stats_collector) {
+        stats::Global_delta delta{};
+        delta.m_discarded_blocks = 1;
+        m_stats_collector->update_global_stats(delta);
+    }
+}
+
 namespace {
 
 bool is_expected_cached_session_resync(bool local_has_state, bool authoritative_has_state)
@@ -1777,10 +1787,12 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
 
     if (block_data.empty()) {
         m_logger->error("[Solo Submit] CRITICAL: block_data is empty! Cannot submit block.");
+        note_block_discarded("empty block_data");
         return network::Shared_payload{};
     }
 
     if (!validate_authoritative_session("Solo Submit", !m_reward_address.empty())) {
+        note_block_discarded("authoritative session validation failed");
         return network::Shared_payload{};
     }
 
@@ -1792,6 +1804,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         m_logger->error("[Solo Submit] Refusing to submit block: reward_address does not match"
                         " the node's session genesis. Fix mining.reward_address to match the"
                         " genesis hash returned by 'system/get/info' on the node and restart.");
+        note_block_discarded("reward_address/session genesis mismatch");
         return network::Shared_payload{};
     }
 
@@ -1802,18 +1815,21 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // top of the signed payload.
     if (!m_template_interface || !m_template_interface->has_valid_template()) {
         m_logger->error("[Solo Submit] No valid template — cannot submit block");
+        note_block_discarded("no valid template");
         return network::Shared_payload{};
     }
 
     const auto* tmpl = m_template_interface->get_current_template();
     if (!tmpl) {
         m_logger->error("[Solo Submit] get_current_template() returned null");
+        note_block_discarded("get_current_template() returned null");
         return network::Shared_payload{};
     }
 
     if (block_data.size() < StatelessBlockUtility::BLOCK_BODY_SIZE) {
         m_logger->error("[Solo Submit] Block payload too small: {} bytes (need at least {} for block body)",
                         block_data.size(), StatelessBlockUtility::BLOCK_BODY_SIZE);
+        note_block_discarded("block payload smaller than BLOCK_BODY_SIZE");
         return network::Shared_payload{};
     }
 
@@ -1830,12 +1846,14 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         block_to_submit = nexusminer::llp_utils::deserialize_block_header(block_body);
     } catch (const std::exception& e) {
         m_logger->error("[Solo Submit] Failed to decode solved block body: {}", e.what());
+        note_block_discarded(std::string("failed to decode solved block body: ") + e.what());
         return network::Shared_payload{};
     }
 
     if (block_to_submit.nNonce != nonce) {
         m_logger->error("[Solo Submit] Nonce mismatch between serialized block (0x{:016x}) and callback argument (0x{:016x})",
                         block_to_submit.nNonce, nonce);
+        note_block_discarded("nonce mismatch between serialized block and callback argument");
         return network::Shared_payload{};
     }
 
@@ -1872,6 +1890,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                 " height=" + std::to_string(block_to_submit.nHeight);
             m_logger->error("[Solo Submit] Session epoch mismatch — rejecting stale submit: {}", detail);
             record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+            note_block_discarded("session epoch mismatch: " + detail);
             return network::Shared_payload{};
         }
     }
@@ -1884,6 +1903,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
             " session_epoch=" + std::to_string(submit_context.session_epoch.get());
         m_logger->error("[Solo Submit] Authoritative submit-height validation failed: {}", detail);
         record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED, detail);
+        note_block_discarded("submit-height validation failed: " + detail);
         return network::Shared_payload{};
     }
 
@@ -1932,6 +1952,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
                         submit_result.rejection_reason);
         record_session_event(SessionManager::SessionEventKind::SUBMIT_REJECTED,
                              submit_result.rejection_reason);
+        note_block_discarded("encode_submit() rejected block: " + submit_result.rejection_reason);
         clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
@@ -1948,6 +1969,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         const size_t header_size = (m_protocol_lane == ProtocolLane::STATELESS) ? 6u : 5u;
         m_logger->error("[Solo Submit] Wire frame too small: {} bytes (header+length={})",
                         framed.size(), header_size);
+        note_block_discarded("wire frame too small after stripping submit header");
         clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
@@ -1992,6 +2014,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // ── ChaCha20-Poly1305 encryption ─────────────────────────────────────────
     if (!m_enable_chacha20) {
         m_logger->error("[Solo Submit] ChaCha20 not enabled");
+        note_block_discarded("ChaCha20 not enabled");
         clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
@@ -2003,6 +2026,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     // Use the authoritative session key from the session container.
     if (!binding.has_crypto_context()) {
         m_logger->critical("[Solo Submit] CRITICAL: authoritative session.chacha20_session_key is not ready");
+        note_block_discarded("chacha20 session key not ready");
         clear_pending_submit_result_state();
         return network::Shared_payload{};
     }
@@ -2019,6 +2043,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         if (!enc_result.success || enc_result.data.empty()) {
             m_logger->error("[Solo Submit] ChaCha20 encryption failed: {}",
                             enc_result.error_message);
+            note_block_discarded("ChaCha20 encryption failed: " + enc_result.error_message);
             clear_pending_submit_result_state();
             return network::Shared_payload{};
         }
@@ -2034,6 +2059,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
         auto result = PacketBuilder::build(m_protocol_lane, LLP::SUBMIT_BLOCK, encryptedPayload);
         if (!result || result->empty()) {
             m_logger->error("[Solo Submit] PacketBuilder::build() returned empty packet");
+            note_block_discarded("PacketBuilder::build() returned empty packet");
             clear_pending_submit_result_state();
             return network::Shared_payload{};
         }
@@ -2049,6 +2075,7 @@ network::Shared_payload Solo::submit_block(std::vector<std::uint8_t> const& bloc
     }
     catch (const std::exception& e) {
         m_logger->error("[Solo Submit] Exception during encryption: {}", e.what());
+        note_block_discarded(std::string("exception during encryption: ") + e.what());
         clear_pending_submit_result_state();
         return network::Shared_payload{};
     }

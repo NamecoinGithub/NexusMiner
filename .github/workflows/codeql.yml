@@ -3,7 +3,7 @@ name: CodeQL
 on:
   workflow_dispatch:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, MINER ]
     paths:
       - 'src/**'
       - 'CMakeLists.txt'
@@ -12,7 +12,7 @@ on:
       - '.github/workflows/codeql.yml'
       - '.github/codeql/**'
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, MINER ]
     paths:
       - 'src/**'
       - 'CMakeLists.txt'

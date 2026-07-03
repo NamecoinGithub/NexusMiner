@@ -559,6 +559,17 @@ private:
     void clear_last_submitted_state();
     void clear_pending_submit_result_state();
 
+    /// Called from every early-return / discard path inside submit_block()
+    /// where a worker-solved block is refused before (or instead of) being
+    /// placed on the wire as SUBMIT_BLOCK. Unlike BLOCK_REJECTED (the node
+    /// rejecting a block it received), this counts blocks the NODE NEVER
+    /// SAW — logs at critical level with a single greppable tag and
+    /// increments stats::Global_delta::m_discarded_blocks so a solved-but-
+    /// dropped block can never be silent (see Global.md / stats printer
+    /// "discarded:" field). Bounded, additive change — no submission
+    /// behaviour is altered, only visibility.
+    void note_block_discarded(const std::string& reason);
+
     /**
      * @brief Unified height-state updater (single source of truth for both HeightTracker and ClientChannelManager)
      *
