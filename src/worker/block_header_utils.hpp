@@ -82,7 +82,7 @@ inline bool HasSufficientPrimeOrigins(const ::LLP::CBlock& block)
 	if (block.nChannel != 1 || block.nVersion < 5)
 		return true;
 
-	return !(GetPrimeProofHash(block) < GetPrimeMinOrigins());
+	return GetPrimeProofHash(block) >= GetPrimeMinOrigins();
 }
 
 } // namespace nexusminer
