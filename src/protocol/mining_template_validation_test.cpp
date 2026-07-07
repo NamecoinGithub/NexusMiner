@@ -21,10 +21,12 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <sstream>
 
 // Mock logger for testing
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/null_sink.h"
+#include "spdlog/sinks/ostream_sink.h"
 
 using namespace nexusminer::protocol;
 namespace MinerLLP = nexusminer::LLP;
@@ -1075,6 +1077,40 @@ int main()
         auto res_jump = tmpl_interface.read_template(post_finalization_jump, "test_node");
         print_test_result("25c: Normal continuity guard resumes after finalization",
             !res_jump.is_valid && !res_jump.height_valid);
+    }
+
+    // ====================================================================
+    // Test 25d: Startup no-template discard does not enter recovery logging
+    //
+    // A burst push can ask the interface to discard before the first template
+    // has ever been installed.  That no-op must not make the initial template
+    // look like a reorg/provisional-recovery event in operator logs.
+    // ====================================================================
+    std::cout << "\nTest 25d: Startup no-template discard keeps initial feed clean" << std::endl;
+    {
+        std::ostringstream captured_logs;
+        auto capture_sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(captured_logs);
+        auto capture_logger = std::make_shared<spdlog::logger>("logger", capture_sink);
+        capture_logger->set_level(spdlog::level::trace);
+        spdlog::set_default_logger(capture_logger);
+
+        MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.discard_template("startup burst before initial template");
+
+        auto initial_data = create_mock_template(6777095, 0x03b34f03, 1);
+        auto initial_result = tmpl_interface.read_template(initial_data, "test_node");
+        capture_logger->flush();
+
+        const auto logs = captured_logs.str();
+        print_test_result("25d: Initial template accepted after startup no-op discard",
+            initial_result.is_valid);
+        print_test_result("25d: Initial template does not log provisional recovery",
+            logs.find("PROVISIONAL RECOVERY TEMPLATE") == std::string::npos &&
+            logs.find("First template after discard") == std::string::npos);
+
+        auto null_sink_restore = std::make_shared<spdlog::sinks::null_sink_mt>();
+        auto null_logger_restore = std::make_shared<spdlog::logger>("logger", null_sink_restore);
+        spdlog::set_default_logger(null_logger_restore);
     }
 
     // ====================================================================

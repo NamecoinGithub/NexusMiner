@@ -226,11 +226,11 @@ MiningTemplateInterface::read_template(const network::Payload& data,
                 m_has_provisional_recovery_template = true;
                 m_provisional_recovery_unified_height = tmpl.block.nHeight;
                 m_provisional_recovery_prev_hash = tmpl.block.hashPrevBlock;
-                m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE accepted: "
-                                   "height={} prev_hash={}... — not promoted to continuity baseline "
-                                   "until channel-height finalization or canonical prev-hash confirmation",
-                                   tmpl.block.nHeight,
-                                   format_hash_preview(tmpl.block.hashPrevBlock.GetBytes()));
+                m_logger->warn("[TemplateInterface] Provisional recovery template accepted: "
+                               "height={} prev_hash={}... — awaiting channel-height finalization "
+                               "or canonical prev-hash confirmation before continuity promotion",
+                               tmpl.block.nHeight,
+                               format_hash_preview(tmpl.block.hashPrevBlock.GetBytes()));
                 if (canonical_prev_hash_confirmed) {
                     promote_provisional_recovery_template_unsafe("canonical prev-hash confirmation");
                 }
@@ -412,10 +412,10 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
                 return result;
             }
 
-            m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE metadata/body "
-                               "corroboration passed (metadata.unified={} → body.height={}, "
-                               "nBits=0x{:08x})",
-                               nUnifiedHeightMeta, body.nHeight, body.nBits);
+            m_logger->info("[TemplateInterface] Provisional recovery metadata/body "
+                           "corroboration passed (metadata.unified={} → body.height={}, "
+                           "nBits=0x{:08x})",
+                           nUnifiedHeightMeta, body.nHeight, body.nBits);
         } catch (const std::exception& e) {
             ValidationResult result;
             result.is_valid = false;
@@ -1229,19 +1229,19 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
                                 abs_height_delta, direction);
                 return result;
             }
-            m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE update accepted: "
-                               "height {} is within {} blocks of unpromoted recovery candidate {}",
-                               tmpl.block.nHeight, abs_height_delta,
-                               m_provisional_recovery_unified_height);
+            m_logger->info("[TemplateInterface] Provisional recovery template update accepted: "
+                           "height {} is within {} blocks of unpromoted recovery candidate {}",
+                           tmpl.block.nHeight, abs_height_delta,
+                           m_provisional_recovery_unified_height);
         } else {
             // discard_template_unsafe() cleared the baseline during recovery.  Do
             // not fall back to HeightTracker.unified_height here: after reorg it
             // may represent a different observation point than the replacement.
             // Accept this as provisional only; read_template() will not promote
             // m_last_unified_height until a later corroboration step.
-            m_logger->critical("[TemplateInterface] 🚨 First template after discard accepted only as "
-                               "provisional recovery candidate; skipping stale HeightTracker continuity "
-                               "fallback and awaiting channel-height finalization or canonical prev-hash confirmation");
+            m_logger->info("[TemplateInterface] First template after discard accepted as "
+                           "provisional recovery candidate; skipping stale HeightTracker continuity "
+                           "fallback until channel-height finalization or canonical prev-hash confirmation");
         }
     } else {
         // m_last_unified_height == 0 at startup: there is no previous template to
@@ -1666,9 +1666,9 @@ void MiningTemplateInterface::promote_provisional_recovery_template_unsafe(const
     m_provisional_recovery_unified_height = 0;
     m_provisional_recovery_prev_hash = {};
 
-    m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE promoted after {}: "
-                       "height={} is now the continuity baseline",
-                       reason ? reason : "corroboration", m_last_unified_height);
+    m_logger->info("[TemplateInterface] Provisional recovery template promoted after {}: "
+                   "height={} is now the continuity baseline",
+                   reason ? reason : "corroboration", m_last_unified_height);
 }
 
 void MiningTemplateInterface::discard_template(const std::string& reason)
@@ -1696,22 +1696,26 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     m_last_feed_height = 0;     // Reset last feed height to default
     m_last_feed_prev_hash = {}; // Reset last prev-hash used for duplicate detection
 
+    if (m_current_template.state == TemplateState::INVALID) {
+        m_logger->debug("[TemplateInterface] No template to discard");
+        return;
+    }
+
     // Reset the unified-height baseline so the next template passes the height sanity check
     // regardless of how many blocks the chain advanced while the miner was in degraded mode.
     // Without this reset, validate_template() rejects every BLOCK_DATA response with
     // "Corrupted Height Detected" (abs_height_delta > 100) when the chain has advanced more
     // than 100 unified blocks during a degraded-mode recovery period, causing
     // get_block_sent_total to increment indefinitely with zero successful template installations.
+    //
+    // Do this only when a real active template is discarded.  Startup/burst paths can ask
+    // to discard while no template has ever been installed; treating that no-op as recovery
+    // makes the initial block template look like a reorg in operator logs.
     m_last_unified_height = 0;
     m_recovery_template_pending = true;
     m_has_provisional_recovery_template = false;
     m_provisional_recovery_unified_height = 0;
     m_provisional_recovery_prev_hash = {};
-
-    if (m_current_template.state == TemplateState::INVALID) {
-        m_logger->debug("[TemplateInterface] No template to discard");
-        return;
-    }
     
     m_logger->info("[TemplateInterface] Discarding template: {}", reason);
     m_logger->info("[TemplateInterface]   - Height: {}", m_current_template.block.nHeight);
