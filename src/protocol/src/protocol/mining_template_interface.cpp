@@ -205,6 +205,14 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     
     if (result.is_valid) {
         tmpl.state = TemplateState::VALID;
+
+        bool canonical_prev_hash_confirmed = false;
+        if (m_height_tracker) {
+            const auto snapshot = m_height_tracker->GetSnapshot();
+            canonical_prev_hash_confirmed =
+                (snapshot.hash_prev_block != uint1024_t(0) &&
+                 snapshot.hash_prev_block == tmpl.block.hashPrevBlock);
+        }
         
         // Protect template assignment with mutex
         {
@@ -214,8 +222,26 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             m_template_channel_height_snapshot = 0;
             m_has_snapshot = false;
             
-            // Update height tracking for sanity checks
-            m_last_unified_height = tmpl.block.nHeight;
+            if (m_recovery_template_pending && m_last_unified_height == 0) {
+                m_has_provisional_recovery_template = true;
+                m_provisional_recovery_unified_height = tmpl.block.nHeight;
+                m_provisional_recovery_prev_hash = tmpl.block.hashPrevBlock;
+                m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE accepted: "
+                                   "height={} prev_hash={}... — not promoted to continuity baseline "
+                                   "until channel-height finalization or canonical prev-hash confirmation",
+                                   tmpl.block.nHeight,
+                                   format_hash_preview(tmpl.block.hashPrevBlock.GetBytes()));
+                if (canonical_prev_hash_confirmed) {
+                    promote_provisional_recovery_template_unsafe("canonical prev-hash confirmation");
+                }
+            } else {
+                // Update height tracking for sanity checks
+                m_last_unified_height = tmpl.block.nHeight;
+                m_recovery_template_pending = false;
+                m_has_provisional_recovery_template = false;
+                m_provisional_recovery_unified_height = 0;
+                m_provisional_recovery_prev_hash = {};
+            }
             
             // Update template received time for age monitoring
             m_template_received_time = std::chrono::steady_clock::now();
@@ -331,6 +357,80 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
 
     // ── Delegate the 216-byte block body to the canonical read_template() ────
     network::Payload block_body(payload228.begin() + METADATA_SIZE, payload228.end());
+
+    bool require_recovery_metadata_consistency = false;
+    {
+        std::lock_guard<std::mutex> lock(m_template_mutex);
+        require_recovery_metadata_consistency =
+            (m_recovery_template_pending && m_last_unified_height == 0);
+    }
+
+    if (require_recovery_metadata_consistency) {
+        try {
+            const auto body = llp_utils::deserialize_block_header(block_body);
+            const bool metadata_height_has_next = (nUnifiedHeightMeta < UINT32_MAX);
+            const uint32_t expected_body_height = metadata_height_has_next
+                ? (nUnifiedHeightMeta + 1)
+                : 0;
+            const bool height_consistent =
+                (metadata_height_has_next && body.nHeight == expected_body_height);
+            const bool nbits_consistent = (body.nBits == nDifficultyMetaEcho);
+            const bool channel_sane = (nChannelHeightMeta <= nUnifiedHeightMeta);
+
+            if (!height_consistent || !nbits_consistent || !channel_sane) {
+                ValidationResult result;
+                result.is_valid = false;
+                result.is_stale = false;
+                result.merkle_valid = true;
+                result.height_valid = height_consistent && channel_sane;
+                result.bits_valid = nbits_consistent;
+                result.channel_valid = true;
+                result.error_message = "Provisional recovery template metadata/body mismatch";
+                if (!metadata_height_has_next) {
+                    result.error_message += ": metadata.unified_height is UINT32_MAX";
+                } else if (!height_consistent) {
+                    result.error_message += ": metadata.unified_height+1=" +
+                        std::to_string(expected_body_height) +
+                        " but body.nHeight=" + std::to_string(body.nHeight);
+                } else if (!nbits_consistent) {
+                    std::ostringstream msg;
+                    msg << ": metadata.nBits=0x" << std::hex << nDifficultyMetaEcho
+                        << " but body.nBits=0x" << body.nBits;
+                    result.error_message += msg.str();
+                } else {
+                    result.error_message += ": metadata.channel_height=" +
+                        std::to_string(nChannelHeightMeta) +
+                        " > metadata.unified_height=" + std::to_string(nUnifiedHeightMeta);
+                }
+                m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
+                m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE rejected: "
+                                   "metadata/body consistency failed "
+                                   "(metadata.unified={} metadata.channel={} metadata.nBits=0x{:08x}; "
+                                   "body.height={} body.nBits=0x{:08x})",
+                                   nUnifiedHeightMeta, nChannelHeightMeta, nDifficultyMetaEcho,
+                                   body.nHeight, body.nBits);
+                return result;
+            }
+
+            m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE metadata/body "
+                               "corroboration passed (metadata.unified={} → body.height={}, "
+                               "nBits=0x{:08x})",
+                               nUnifiedHeightMeta, body.nHeight, body.nBits);
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.is_valid = false;
+            result.is_stale = false;
+            result.merkle_valid = false;
+            result.height_valid = false;
+            result.bits_valid = false;
+            result.channel_valid = false;
+            result.error_message = std::string("Failed to parse provisional recovery template body: ") + e.what();
+            m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
+            m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE rejected: {}", result.error_message);
+            return result;
+        }
+    }
+
     auto result = read_template(block_body, source_endpoint, auto_feed);
 
     // ── Store diagnostic metadata in the current template (if decode succeeded) ─
@@ -1076,7 +1176,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     if (m_last_unified_height > 0) {
         // Calculate absolute height difference to handle both directions
         int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(m_last_unified_height);
-        uint32_t abs_height_delta = static_cast<uint32_t>(std::abs(height_diff));
+        uint64_t abs_height_delta = static_cast<uint64_t>(std::abs(height_diff));
         
         if (abs_height_delta > 100) {
             result.height_valid = false;
@@ -1106,42 +1206,47 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         } else {
             m_logger->debug("[TemplateInterface] ℹ️  Height unchanged (duplicate template)");
         }
-    } else {
-        // m_last_unified_height == 0: either this is the very first template after
-        // startup, or discard_template_unsafe() just cleared the baseline during
-        // degraded-mode recovery.  Use HeightTracker.unified_height as a secondary
-        // sanity barrier so a corrupted template cannot slip through the gap.
-        if (m_height_tracker) {
-            auto snap = m_height_tracker->GetSnapshot();
-            if (snap.unified_height > 0) {
-                int64_t ht_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(snap.unified_height);
-                uint32_t ht_abs_delta = static_cast<uint32_t>(std::abs(ht_diff));
-                if (ht_abs_delta > 100) {
-                    result.height_valid = false;
-                    result.is_valid = false;
+    } else if (m_recovery_template_pending) {
+        if (m_has_provisional_recovery_template && m_provisional_recovery_unified_height > 0) {
+            int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) -
+                                  static_cast<int64_t>(m_provisional_recovery_unified_height);
+            uint64_t abs_height_delta = static_cast<uint64_t>(std::abs(height_diff));
+            if (abs_height_delta > 100) {
+                result.height_valid = false;
+                result.is_valid = false;
 
-                    std::string direction = (ht_diff > 0) ? "forward" : "backward";
-                    result.error_message = "Unified height " + direction + " jump exceeds HeightTracker sanity threshold: " +
-                        std::to_string(snap.unified_height) + " → " +
-                        std::to_string(tmpl.block.nHeight) + " (delta: " +
-                        std::to_string(ht_abs_delta) + " blocks, max: 100)";
+                std::string direction = (height_diff > 0) ? "forward" : "backward";
+                result.error_message = "Provisional recovery height " + direction +
+                    " jump exceeds sanity threshold: " +
+                    std::to_string(m_provisional_recovery_unified_height) + " → " +
+                    std::to_string(tmpl.block.nHeight) + " (delta: " +
+                    std::to_string(abs_height_delta) + " blocks, max: 100)";
 
-                    m_logger->error("[TemplateInterface] ❌ CORRUPTED HEIGHT DETECTED (HeightTracker cross-check)");
-                    m_logger->error("[TemplateInterface]   HeightTracker unified: {}", snap.unified_height);
-                    m_logger->error("[TemplateInterface]   Template height: {}", tmpl.block.nHeight);
-                    m_logger->error("[TemplateInterface]   Delta: {} blocks {} (max allowed: 100)",
-                                   ht_abs_delta, direction);
-                    return result;
-                }
-                m_logger->debug("[TemplateInterface] ℹ️  First template after discard — HeightTracker cross-check passed "
-                               "(tracker={} template={} delta={})", snap.unified_height, tmpl.block.nHeight, ht_abs_delta);
-            } else {
-                m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check "
-                               "(HeightTracker also uninitialized)");
+                m_logger->error("[TemplateInterface] ❌ PROVISIONAL RECOVERY HEIGHT REJECTED");
+                m_logger->error("[TemplateInterface]   Provisional height: {}", m_provisional_recovery_unified_height);
+                m_logger->error("[TemplateInterface]   Candidate height: {}", tmpl.block.nHeight);
+                m_logger->error("[TemplateInterface]   Delta: {} blocks {} (max allowed: 100)",
+                                abs_height_delta, direction);
+                return result;
             }
+            m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE update accepted: "
+                               "height {} is within {} blocks of unpromoted recovery candidate {}",
+                               tmpl.block.nHeight, abs_height_delta,
+                               m_provisional_recovery_unified_height);
         } else {
-            m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check");
+            // discard_template_unsafe() cleared the baseline during recovery.  Do
+            // not fall back to HeightTracker.unified_height here: after reorg it
+            // may represent a different observation point than the replacement.
+            // Accept this as provisional only; read_template() will not promote
+            // m_last_unified_height until a later corroboration step.
+            m_logger->critical("[TemplateInterface] 🚨 First template after discard accepted only as "
+                               "provisional recovery candidate; skipping stale HeightTracker continuity "
+                               "fallback and awaiting channel-height finalization or canonical prev-hash confirmation");
         }
+    } else {
+        // m_last_unified_height == 0 at startup: there is no previous template to
+        // compare against, so skip the continuity sanity check for this template.
+        m_logger->debug("[TemplateInterface] ℹ️  First template after startup - skipping height continuity sanity check");
     }
     
     // Validate channel height if available (only mark stale when THIS channel advanced)
@@ -1534,6 +1639,8 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
     m_logger->info("[TemplateInterface] ✓ Template channel height (metadata) set to {} (block.nHeight={} unchanged)",
         channel_height, m_current_template.block.nHeight);
 
+    promote_provisional_recovery_template_unsafe("channel-height finalization");
+
     // Notify HeightTracker with the correct channel target height (channel_height is node tip + 1).
     // This must be called here (not in read_template()) because block.nHeight is the UNIFIED
     // blockchain height and would cause HeightTracker::channel_target to be set incorrectly.
@@ -1544,6 +1651,24 @@ void MiningTemplateInterface::set_channel_height(uint32_t channel_height)
             m_logger->info("{}", drift_msg);
         }
     }
+}
+
+void MiningTemplateInterface::promote_provisional_recovery_template_unsafe(const char* reason)
+{
+    // ASSUMES: m_template_mutex is already locked by caller
+    if (!m_recovery_template_pending || !m_has_provisional_recovery_template) {
+        return;
+    }
+
+    m_last_unified_height = m_current_template.block.nHeight;
+    m_recovery_template_pending = false;
+    m_has_provisional_recovery_template = false;
+    m_provisional_recovery_unified_height = 0;
+    m_provisional_recovery_prev_hash = {};
+
+    m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE promoted after {}: "
+                       "height={} is now the continuity baseline",
+                       reason ? reason : "corroboration", m_last_unified_height);
 }
 
 void MiningTemplateInterface::discard_template(const std::string& reason)
@@ -1578,6 +1703,10 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     // than 100 unified blocks during a degraded-mode recovery period, causing
     // get_block_sent_total to increment indefinitely with zero successful template installations.
     m_last_unified_height = 0;
+    m_recovery_template_pending = true;
+    m_has_provisional_recovery_template = false;
+    m_provisional_recovery_unified_height = 0;
+    m_provisional_recovery_prev_hash = {};
 
     if (m_current_template.state == TemplateState::INVALID) {
         m_logger->debug("[TemplateInterface] No template to discard");

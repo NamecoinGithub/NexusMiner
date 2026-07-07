@@ -34,6 +34,9 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
+static constexpr size_t TRITIUM_METADATA_PREFIX_SIZE = 12;
+static constexpr size_t TRITIUM_BODY_NHEIGHT_OFFSET = 200;
+
 void print_test_result(const char* name, bool passed) {
     tests_run++;
     if (passed) {
@@ -111,6 +114,28 @@ std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d
     data[offset++] = (nonce_val >> 56) & 0xFF;
     
     return data;
+}
+
+std::vector<uint8_t> create_mock_stateless_payload(uint32_t metadata_unified_height,
+                                                   uint32_t metadata_channel_height,
+                                                   uint32_t nBits = 0x1d00ffff,
+                                                   uint8_t channel = 2) {
+    auto body = create_mock_template(metadata_unified_height + 1, nBits, channel);
+    std::vector<uint8_t> payload;
+    payload.reserve(12 + body.size());
+
+    auto write_u32_be = [&](uint32_t value) {
+        payload.push_back((value >> 24) & 0xFF);
+        payload.push_back((value >> 16) & 0xFF);
+        payload.push_back((value >> 8) & 0xFF);
+        payload.push_back(value & 0xFF);
+    };
+
+    write_u32_be(metadata_unified_height);
+    write_u32_be(metadata_channel_height);
+    write_u32_be(nBits);
+    payload.insert(payload.end(), body.begin(), body.end());
+    return payload;
 }
 
 int main()
@@ -956,6 +981,100 @@ int main()
         // meaning the block handler in Worker_manager would clear m_degraded_mode.
         print_test_result("has_valid_template() true after recovery (degraded mode would clear)",
             tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 25b: Post-discard recovery does not compare first replacement
+    //           template against HeightTracker unified height
+    //
+    // Regression for deep reorg recovery: discard_template() clears
+    // m_last_unified_height, so the first replacement template has no
+    // same-source previous template baseline.  HeightTracker may still carry a
+    // canonical observation point from before/during recovery; using it as a
+    // fallback continuity baseline falsely rejects the replacement template.
+    // ====================================================================
+    std::cout << "\nTest 25b: Post-discard first template skips HeightTracker continuity fallback" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        HeightTracker tracker;
+        MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+
+        // Initial template and canonical tracker state matching the field log.
+        auto data_init = create_mock_template(6776736, 0x20805441, 2);
+        auto res_init = tmpl_interface.read_template(data_init, "test_node");
+        print_test_result("Initial pre-reorg template loaded", res_init.is_valid);
+
+        // Simulate the tracker observing a newer canonical point before the
+        // miner discards stale work during recovery.
+        tracker.OnBlockDataReceived(6777002, 2402342, 0x20805441, uint1024_t{});
+        tmpl_interface.discard_template("deep reorg recovery");
+        print_test_result("Template discarded before recovery replacement", !tmpl_interface.has_valid_template());
+
+        // This is only +1 from the discarded template, but 265 blocks behind
+        // HeightTracker's canonical observation.  Option A requires accepting it
+        // because no same-source template baseline exists immediately post-discard.
+        auto data_recovery = create_mock_template(6776737, 0x20805441, 2);
+        auto res_recovery = tmpl_interface.read_template(data_recovery, "test_node");
+        if (!res_recovery.is_valid) {
+            std::cout << "    Post-discard recovery error: " << res_recovery.error_message << std::endl;
+        }
+        print_test_result("Post-discard replacement accepted despite tracker/template delta >100",
+            res_recovery.is_valid);
+    }
+
+    // ====================================================================
+    // Test 25c: Post-discard recovery is provisional until corroborated
+    //
+    // A stale HeightTracker must not reject the first replacement, but the
+    // replacement is not a clean baseline until metadata/body consistency and
+    // channel-height finalization (or canonical prev-hash confirmation).
+    // ====================================================================
+    std::cout << "\nTest 25c: Post-discard recovery template is provisional until corroborated" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        auto data_init = create_mock_template(6776736, 0x20805441, 2);
+        auto res_init = tmpl_interface.read_template(data_init, "test_node");
+        print_test_result("25c: Initial template loaded", res_init.is_valid);
+
+        tmpl_interface.discard_template("deep reorg recovery");
+        print_test_result("25c: Template discarded before provisional recovery",
+            !tmpl_interface.has_valid_template());
+
+        auto bad_payload = create_mock_stateless_payload(6776736, 2402342, 0x20805441, 2);
+        // Corrupt body.nHeight while leaving metadata.unified_height intact.
+        const uint32_t wrong_body_height = 6776500;
+        const size_t height_offset = TRITIUM_METADATA_PREFIX_SIZE + TRITIUM_BODY_NHEIGHT_OFFSET;
+        bad_payload[height_offset] = (wrong_body_height >> 24) & 0xFF;
+        bad_payload[height_offset + 1] = (wrong_body_height >> 16) & 0xFF;
+        bad_payload[height_offset + 2] = (wrong_body_height >> 8) & 0xFF;
+        bad_payload[height_offset + 3] = wrong_body_height & 0xFF;
+        auto res_bad = tmpl_interface.read_stateless_payload(bad_payload, "test_node");
+        print_test_result("25c: Provisional recovery rejects metadata/body height mismatch",
+            !res_bad.is_valid && !res_bad.height_valid);
+        print_test_result("25c: Rejected provisional payload does not install a template",
+            !tmpl_interface.has_valid_template());
+
+        auto good_payload = create_mock_stateless_payload(6776736, 2402342, 0x20805441, 2);
+        auto res_good = tmpl_interface.read_stateless_payload(good_payload, "test_node");
+        print_test_result("25c: Consistent provisional recovery payload is accepted",
+            res_good.is_valid && tmpl_interface.has_valid_template());
+
+        auto far_payload = create_mock_template(6776900, 0x20805441, 2);
+        auto res_far = tmpl_interface.read_template(far_payload, "test_node");
+        print_test_result("25c: Second uncorroborated recovery jump >100 is rejected",
+            !res_far.is_valid && !res_far.height_valid);
+
+        tmpl_interface.set_channel_height(2402343);
+        print_test_result("25c: Channel-height finalization keeps recovery template valid",
+            tmpl_interface.has_valid_template());
+
+        auto post_finalization_jump = create_mock_template(6776838, 0x20805441, 2);
+        auto res_jump = tmpl_interface.read_template(post_finalization_jump, "test_node");
+        print_test_result("25c: Normal continuity guard resumes after finalization",
+            !res_jump.is_valid && !res_jump.height_valid);
     }
 
     // ====================================================================

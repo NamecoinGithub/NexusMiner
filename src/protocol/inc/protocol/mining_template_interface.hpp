@@ -718,6 +718,7 @@ private:
     uint64_t get_template_age_unsafe() const;
     void mark_template_stale_unsafe(const std::string& reason);
     void discard_template_unsafe(const std::string& reason);
+    void promote_provisional_recovery_template_unsafe(const char* reason);
     
     // Member variables
     uint8_t m_channel;
@@ -729,6 +730,10 @@ private:
     uint32_t m_template_channel_height_snapshot;
     bool m_has_snapshot;
     uint32_t m_last_unified_height;  // Track last unified height from GET_BLOCK for submission guards
+    bool m_recovery_template_pending{false};
+    bool m_has_provisional_recovery_template{false};
+    uint32_t m_provisional_recovery_unified_height{0};
+    uint1024_t m_provisional_recovery_prev_hash{0};
     std::chrono::steady_clock::time_point m_template_received_time;  // Track template age
     
     MiningTemplate m_current_template;
