@@ -1106,6 +1106,7 @@ int main()
             initial_result.is_valid);
         print_test_result("25d: Initial template does not log provisional recovery",
             logs.find("PROVISIONAL RECOVERY TEMPLATE") == std::string::npos &&
+            logs.find("Provisional recovery template") == std::string::npos &&
             logs.find("First template after discard") == std::string::npos);
 
         auto null_sink_restore = std::make_shared<spdlog::sinks::null_sink_mt>();

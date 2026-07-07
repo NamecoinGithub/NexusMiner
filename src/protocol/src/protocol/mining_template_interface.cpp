@@ -1710,7 +1710,9 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     //
     // Do this only when a real active template is discarded.  Startup/burst paths can ask
     // to discard while no template has ever been installed; treating that no-op as recovery
-    // makes the initial block template look like a reorg in operator logs.
+    // makes the initial block template look like a reorg in operator logs.  Repeated no-op
+    // startup discards should remain a clean slate: debounce is cleared above, but recovery
+    // state must not be initialized until there is actual installed work to recover from.
     m_last_unified_height = 0;
     m_recovery_template_pending = true;
     m_has_provisional_recovery_template = false;
