@@ -34,6 +34,9 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
+static constexpr size_t TRITIUM_METADATA_PREFIX_SIZE = 12;
+static constexpr size_t TRITIUM_BODY_NHEIGHT_OFFSET = 200;
+
 void print_test_result(const char* name, bool passed) {
     tests_run++;
     if (passed) {
@@ -1043,10 +1046,11 @@ int main()
         auto bad_payload = create_mock_stateless_payload(6776736, 2402342, 0x20805441, 2);
         // Corrupt body.nHeight while leaving metadata.unified_height intact.
         const uint32_t wrong_body_height = 6776500;
-        bad_payload[12 + 200] = (wrong_body_height >> 24) & 0xFF;
-        bad_payload[12 + 201] = (wrong_body_height >> 16) & 0xFF;
-        bad_payload[12 + 202] = (wrong_body_height >> 8) & 0xFF;
-        bad_payload[12 + 203] = wrong_body_height & 0xFF;
+        const size_t height_offset = TRITIUM_METADATA_PREFIX_SIZE + TRITIUM_BODY_NHEIGHT_OFFSET;
+        bad_payload[height_offset] = (wrong_body_height >> 24) & 0xFF;
+        bad_payload[height_offset + 1] = (wrong_body_height >> 16) & 0xFF;
+        bad_payload[height_offset + 2] = (wrong_body_height >> 8) & 0xFF;
+        bad_payload[height_offset + 3] = wrong_body_height & 0xFF;
         auto res_bad = tmpl_interface.read_stateless_payload(bad_payload, "test_node");
         print_test_result("25c: Provisional recovery rejects metadata/body height mismatch",
             !res_bad.is_valid && !res_bad.height_valid);

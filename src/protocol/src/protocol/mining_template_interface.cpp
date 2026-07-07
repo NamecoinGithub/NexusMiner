@@ -368,8 +368,12 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
     if (require_recovery_metadata_consistency) {
         try {
             const auto body = llp_utils::deserialize_block_header(block_body);
-            const uint32_t expected_body_height = nUnifiedHeightMeta + 1;
-            const bool height_consistent = (body.nHeight == expected_body_height);
+            const bool metadata_height_has_next = (nUnifiedHeightMeta < UINT32_MAX);
+            const uint32_t expected_body_height = metadata_height_has_next
+                ? (nUnifiedHeightMeta + 1)
+                : 0;
+            const bool height_consistent =
+                (metadata_height_has_next && body.nHeight == expected_body_height);
             const bool nbits_consistent = (body.nBits == nDifficultyMetaEcho);
             const bool channel_sane = (nChannelHeightMeta <= nUnifiedHeightMeta);
 
@@ -382,7 +386,9 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
                 result.bits_valid = nbits_consistent;
                 result.channel_valid = true;
                 result.error_message = "Provisional recovery template metadata/body mismatch";
-                if (!height_consistent) {
+                if (!metadata_height_has_next) {
+                    result.error_message += ": metadata.unified_height is UINT32_MAX";
+                } else if (!height_consistent) {
                     result.error_message += ": metadata.unified_height+1=" +
                         std::to_string(expected_body_height) +
                         " but body.nHeight=" + std::to_string(body.nHeight);
@@ -1170,7 +1176,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     if (m_last_unified_height > 0) {
         // Calculate absolute height difference to handle both directions
         int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(m_last_unified_height);
-        uint32_t abs_height_delta = static_cast<uint32_t>(std::abs(height_diff));
+        uint64_t abs_height_delta = static_cast<uint64_t>(std::abs(height_diff));
         
         if (abs_height_delta > 100) {
             result.height_valid = false;
@@ -1204,7 +1210,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         if (m_has_provisional_recovery_template && m_provisional_recovery_unified_height > 0) {
             int64_t height_diff = static_cast<int64_t>(tmpl.block.nHeight) -
                                   static_cast<int64_t>(m_provisional_recovery_unified_height);
-            uint32_t abs_height_delta = static_cast<uint32_t>(std::abs(height_diff));
+            uint64_t abs_height_delta = static_cast<uint64_t>(std::abs(height_diff));
             if (abs_height_delta > 100) {
                 result.height_valid = false;
                 result.is_valid = false;
