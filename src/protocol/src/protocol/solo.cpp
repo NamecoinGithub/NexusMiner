@@ -2383,31 +2383,6 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             nBitsMeta      = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16)
                            | (uint32_t(d[10]) << 8) |  uint32_t(d[11]);
         }
-        // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
-        // Feed unified_height, channel_height, nBits from the authoritative node
-        // BLOCK_DATA metadata prefix.  This is the canonical source of truth for
-        // staleness detection — validate_current_template() reads HeightTracker
-        // exclusively (not block.nHeight, which is the unified height for ProofHash).
-        // Use TEMPLATE source (not PUSH) so last_template_update timestamp is set,
-        // enabling the post-push guard in check_template_health() to suppress false-positive
-        // emergency stops when the GET_BLOCK response arrives after a push notification.
-        update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::TEMPLATE);
-
-        // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
-        // Record channel_target = channel_height + 1 so is_template_stale() can
-        // detect when the node's channel tip reaches or passes this template's target.
-        // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
-        //
-        // Bug #5 fix: use raw BLOCK_DATA metadata channel_height directly.
-        // Previously used max(metadata, composite tracker) which allowed stale
-        // push data to inflate the channel_target beyond what BLOCK_DATA reported.
-        // BLOCK_DATA metadata is authoritative — trust the node.
-        if (nChannelHeight > 0) {
-            m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
-            m_logger->info("[Solo BLOCK_DATA] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
-                nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
-        }
-
         if (!m_template_interface) {
             // m_template_interface is constructed unconditionally in Solo's
             // constructor; this branch is unreachable in production.  Treat it
@@ -2436,6 +2411,30 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                                           GetBlockReason::VALIDATION_FAILURE,
                                           "[Solo] Validation recovery GET_BLOCK");
             return;
+        }
+
+        // ── HeightTracker BLOCK_DATA feed (Step 1/2) ───────────────────────────────
+        // Feed HeightTracker only after MiningTemplateInterface accepted the full
+        // metadata+body payload.  During provisional recovery, rejected metadata
+        // must not advance monotonic canonical tracker state.
+        // Use TEMPLATE source (not PUSH) so last_template_update timestamp is set,
+        // enabling the post-push guard in check_template_health() to suppress false-positive
+        // emergency stops when the GET_BLOCK response arrives after a push notification.
+        update_height_state(nUnifiedHeight, nChannelHeight, nBitsMeta, HeightTracker::UpdateSource::TEMPLATE);
+
+        // ── HeightTracker BLOCK_DATA feed (Step 2/2) ───────────────────────────────
+        // Record channel_target = channel_height + 1 so is_template_stale() can
+        // detect when the node's channel tip reaches or passes this template's target.
+        // Skip genesis (channel_height == 0) to avoid false-positive staleness at startup.
+        //
+        // Bug #5 fix: use raw BLOCK_DATA metadata channel_height directly.
+        // Previously used max(metadata, composite tracker) which allowed stale
+        // push data to inflate the channel_target beyond what BLOCK_DATA reported.
+        // BLOCK_DATA metadata is authoritative after payload validation succeeds.
+        if (nChannelHeight > 0) {
+            m_height_tracker.OnTemplateReceived(m_channel, nChannelHeight + 1);
+            m_logger->info("[Solo BLOCK_DATA] HeightTracker fed: unified={} channel={} nBits=0x{:08x} → channel_target={}",
+                nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
         }
 
         m_logger->info("[Solo READ] Template validated successfully in {} μs",
