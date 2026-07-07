@@ -959,6 +959,47 @@ int main()
     }
 
     // ====================================================================
+    // Test 25b: Post-discard recovery does not compare first replacement
+    //           template against HeightTracker unified height
+    //
+    // Regression for deep reorg recovery: discard_template() clears
+    // m_last_unified_height, so the first replacement template has no
+    // same-source previous template baseline.  HeightTracker may still carry a
+    // canonical observation point from before/during recovery; using it as a
+    // fallback continuity baseline falsely rejects the replacement template.
+    // ====================================================================
+    std::cout << "\nTest 25b: Post-discard first template skips HeightTracker continuity fallback" << std::endl;
+    {
+        using nexusminer::protocol::HeightTracker;
+
+        HeightTracker tracker;
+        MiningTemplateInterface tmpl_interface(2, 0);
+        tmpl_interface.set_height_tracker(&tracker);
+
+        // Initial template and canonical tracker state matching the field log.
+        auto data_init = create_mock_template(6776736, 0x20805441, 2);
+        auto res_init = tmpl_interface.read_template(data_init, "test_node");
+        print_test_result("Initial pre-reorg template loaded", res_init.is_valid);
+
+        // Simulate the tracker observing a newer canonical point before the
+        // miner discards stale work during recovery.
+        tracker.OnBlockDataReceived(6777002, 2402342, 0x20805441, uint1024_t{});
+        tmpl_interface.discard_template("deep reorg recovery");
+        print_test_result("Template discarded before recovery replacement", !tmpl_interface.has_valid_template());
+
+        // This is only +1 from the discarded template, but 265 blocks behind
+        // HeightTracker's canonical observation.  Option A requires accepting it
+        // because no same-source template baseline exists immediately post-discard.
+        auto data_recovery = create_mock_template(6776737, 0x20805441, 2);
+        auto res_recovery = tmpl_interface.read_template(data_recovery, "test_node");
+        if (!res_recovery.is_valid) {
+            std::cout << "    Post-discard recovery error: " << res_recovery.error_message << std::endl;
+        }
+        print_test_result("Post-discard replacement accepted despite tracker/template delta >100",
+            res_recovery.is_valid);
+    }
+
+    // ====================================================================
     // Test 26: Degraded-mode re-entry guard — new template not discarded by stale check
     //          when channel_target advances past previous channel_height
     // ====================================================================

@@ -1109,39 +1109,13 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     } else {
         // m_last_unified_height == 0: either this is the very first template after
         // startup, or discard_template_unsafe() just cleared the baseline during
-        // degraded-mode recovery.  Use HeightTracker.unified_height as a secondary
-        // sanity barrier so a corrupted template cannot slip through the gap.
-        if (m_height_tracker) {
-            auto snap = m_height_tracker->GetSnapshot();
-            if (snap.unified_height > 0) {
-                int64_t ht_diff = static_cast<int64_t>(tmpl.block.nHeight) - static_cast<int64_t>(snap.unified_height);
-                uint32_t ht_abs_delta = static_cast<uint32_t>(std::abs(ht_diff));
-                if (ht_abs_delta > 100) {
-                    result.height_valid = false;
-                    result.is_valid = false;
-
-                    std::string direction = (ht_diff > 0) ? "forward" : "backward";
-                    result.error_message = "Unified height " + direction + " jump exceeds HeightTracker sanity threshold: " +
-                        std::to_string(snap.unified_height) + " → " +
-                        std::to_string(tmpl.block.nHeight) + " (delta: " +
-                        std::to_string(ht_abs_delta) + " blocks, max: 100)";
-
-                    m_logger->error("[TemplateInterface] ❌ CORRUPTED HEIGHT DETECTED (HeightTracker cross-check)");
-                    m_logger->error("[TemplateInterface]   HeightTracker unified: {}", snap.unified_height);
-                    m_logger->error("[TemplateInterface]   Template height: {}", tmpl.block.nHeight);
-                    m_logger->error("[TemplateInterface]   Delta: {} blocks {} (max allowed: 100)",
-                                   ht_abs_delta, direction);
-                    return result;
-                }
-                m_logger->debug("[TemplateInterface] ℹ️  First template after discard — HeightTracker cross-check passed "
-                               "(tracker={} template={} delta={})", snap.unified_height, tmpl.block.nHeight, ht_abs_delta);
-            } else {
-                m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check "
-                               "(HeightTracker also uninitialized)");
-            }
-        } else {
-            m_logger->debug("[TemplateInterface] ℹ️  First template - skipping height sanity check");
-        }
+        // degraded-mode recovery.  There is no same-source previous template to
+        // compare against, so skip the continuity sanity check for this one
+        // template.  Do not fall back to HeightTracker.unified_height here:
+        // after reorg/recovery it may represent a different observation point
+        // than the first accepted replacement template, producing false
+        // "corrupted height" rejects while the miner is trying to self-heal.
+        m_logger->debug("[TemplateInterface] ℹ️  First template after startup/discard - skipping height continuity sanity check");
     }
     
     // Validate channel height if available (only mark stale when THIS channel advanced)
