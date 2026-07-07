@@ -2370,7 +2370,9 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
             source_endpoint = connection->remote_endpoint().to_string();
         }
 
-        // Extract 12-byte metadata prefix (big-endian) and strip it before parsing
+        // Extract 12-byte metadata prefix (big-endian) for HeightTracker, then
+        // pass the full metadata+body payload to MiningTemplateInterface so
+        // provisional recovery can require metadata/body consistency.
         uint32_t nUnifiedHeight = 0, nChannelHeight = 0, nBitsMeta = 0;
         {
             const auto& d = *packet.m_data;
@@ -2406,10 +2408,6 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
                 nUnifiedHeight, nChannelHeight, nBitsMeta, nChannelHeight + 1);
         }
 
-        // Strip the 12-byte prefix; pass only the 216-byte Block::Serialize() output to read_template
-        auto block_serial = std::make_shared<network::Payload>(
-            packet.m_data->begin() + BLOCK_METADATA_PREFIX_SIZE, packet.m_data->end());
-
         if (!m_template_interface) {
             // m_template_interface is constructed unconditionally in Solo's
             // constructor; this branch is unreachable in production.  Treat it
@@ -2425,7 +2423,7 @@ void Solo::on_block_data(Packet const& packet, std::shared_ptr<network::Connecti
 
         m_logger->info("[Solo READ/FEED] Processing template via Mining Template Interface");
 
-        auto validation_result = m_template_interface->read_template(block_serial, source_endpoint, false);
+        auto validation_result = m_template_interface->read_stateless_payload(*packet.m_data, source_endpoint, false);
 
         if (!validation_result.is_valid) {
             m_logger->error("[Solo READ] Template validation failed: {}", validation_result.error_message);

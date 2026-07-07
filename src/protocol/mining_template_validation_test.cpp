@@ -113,6 +113,28 @@ std::vector<uint8_t> create_mock_template(uint32_t height, uint32_t nBits = 0x1d
     return data;
 }
 
+std::vector<uint8_t> create_mock_stateless_payload(uint32_t metadata_unified_height,
+                                                   uint32_t metadata_channel_height,
+                                                   uint32_t nBits = 0x1d00ffff,
+                                                   uint8_t channel = 2) {
+    auto body = create_mock_template(metadata_unified_height + 1, nBits, channel);
+    std::vector<uint8_t> payload;
+    payload.reserve(12 + body.size());
+
+    auto write_u32_be = [&](uint32_t value) {
+        payload.push_back((value >> 24) & 0xFF);
+        payload.push_back((value >> 16) & 0xFF);
+        payload.push_back((value >> 8) & 0xFF);
+        payload.push_back(value & 0xFF);
+    };
+
+    write_u32_be(metadata_unified_height);
+    write_u32_be(metadata_channel_height);
+    write_u32_be(nBits);
+    payload.insert(payload.end(), body.begin(), body.end());
+    return payload;
+}
+
 int main()
 {
     // Setup null logger to avoid spam during tests
@@ -997,6 +1019,58 @@ int main()
         }
         print_test_result("Post-discard replacement accepted despite tracker/template delta >100",
             res_recovery.is_valid);
+    }
+
+    // ====================================================================
+    // Test 25c: Post-discard recovery is provisional until corroborated
+    //
+    // A stale HeightTracker must not reject the first replacement, but the
+    // replacement is not a clean baseline until metadata/body consistency and
+    // channel-height finalization (or canonical prev-hash confirmation).
+    // ====================================================================
+    std::cout << "\nTest 25c: Post-discard recovery template is provisional until corroborated" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+
+        auto data_init = create_mock_template(6776736, 0x20805441, 2);
+        auto res_init = tmpl_interface.read_template(data_init, "test_node");
+        print_test_result("25c: Initial template loaded", res_init.is_valid);
+
+        tmpl_interface.discard_template("deep reorg recovery");
+        print_test_result("25c: Template discarded before provisional recovery",
+            !tmpl_interface.has_valid_template());
+
+        auto bad_payload = create_mock_stateless_payload(6776736, 2402342, 0x20805441, 2);
+        // Corrupt body.nHeight while leaving metadata.unified_height intact.
+        const uint32_t wrong_body_height = 6776500;
+        bad_payload[12 + 200] = (wrong_body_height >> 24) & 0xFF;
+        bad_payload[12 + 201] = (wrong_body_height >> 16) & 0xFF;
+        bad_payload[12 + 202] = (wrong_body_height >> 8) & 0xFF;
+        bad_payload[12 + 203] = wrong_body_height & 0xFF;
+        auto res_bad = tmpl_interface.read_stateless_payload(bad_payload, "test_node");
+        print_test_result("25c: Provisional recovery rejects metadata/body height mismatch",
+            !res_bad.is_valid && !res_bad.height_valid);
+        print_test_result("25c: Rejected provisional payload does not install a template",
+            !tmpl_interface.has_valid_template());
+
+        auto good_payload = create_mock_stateless_payload(6776736, 2402342, 0x20805441, 2);
+        auto res_good = tmpl_interface.read_stateless_payload(good_payload, "test_node");
+        print_test_result("25c: Consistent provisional recovery payload is accepted",
+            res_good.is_valid && tmpl_interface.has_valid_template());
+
+        auto far_payload = create_mock_template(6776900, 0x20805441, 2);
+        auto res_far = tmpl_interface.read_template(far_payload, "test_node");
+        print_test_result("25c: Second uncorroborated recovery jump >100 is rejected",
+            !res_far.is_valid && !res_far.height_valid);
+
+        tmpl_interface.set_channel_height(2402343);
+        print_test_result("25c: Channel-height finalization keeps recovery template valid",
+            tmpl_interface.has_valid_template());
+
+        auto post_finalization_jump = create_mock_template(6776838, 0x20805441, 2);
+        auto res_jump = tmpl_interface.read_template(post_finalization_jump, "test_node");
+        print_test_result("25c: Normal continuity guard resumes after finalization",
+            !res_jump.is_valid && !res_jump.height_valid);
     }
 
     // ====================================================================
