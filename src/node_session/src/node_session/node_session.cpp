@@ -590,6 +590,12 @@ void NodeSession::apply_protocol_handlers(LaneSlot slot)
             m_node_shutdown_handler(reason);
         }
     });
+
+    protocol->set_replacement_pending_handler([this](std::chrono::steady_clock::time_point deadline) {
+        if (m_replacement_pending_handler) {
+            m_replacement_pending_handler(deadline);
+        }
+    });
 }
 
 void NodeSession::mark_all_lanes_down(const char* reason)
@@ -832,6 +838,12 @@ void NodeSession::set_session_start_handler(Session_start_handler handler)
 void NodeSession::set_node_shutdown_handler(Node_shutdown_handler handler)
 {
     m_node_shutdown_handler = std::move(handler);
+    rewire_protocol_handlers();
+}
+
+void NodeSession::set_replacement_pending_handler(Replacement_pending_handler handler)
+{
+    m_replacement_pending_handler = std::move(handler);
     rewire_protocol_handlers();
 }
 

@@ -133,6 +133,19 @@ public:
     using Node_shutdown_handler = std::function<void(uint8_t reason)>;
 
     /**
+     * @brief Replacement-pending handler
+     *
+     * Fired after a PUSH notification leaves the current template marked
+     * replacement-pending (same-height tip update), carrying the deadline by
+     * which the promised BLOCK_DATA must arrive. Lets Worker_manager arm a
+     * precise one-shot timer instead of relying solely on the slower
+     * general-purpose template-health polling cadence.
+     * @param deadline steady_clock deadline for the pending replacement
+     */
+    using Replacement_pending_handler =
+        std::function<void(std::chrono::steady_clock::time_point deadline)>;
+
+    /**
      * @brief Constructor
      * @param io_context ASIO io_context for async operations
      * @param config Configuration reference
@@ -261,6 +274,12 @@ public:
      * @param handler Node shutdown callback
      */
     void set_node_shutdown_handler(Node_shutdown_handler handler);
+
+    /**
+     * @brief Set replacement-pending handler
+     * @param handler Replacement-pending callback
+     */
+    void set_replacement_pending_handler(Replacement_pending_handler handler);
 
     /**
      * @brief Set Falcon miner keys
@@ -480,8 +499,7 @@ private:
     Work_ready_handler m_work_ready_handler;
     Session_start_handler m_session_start_handler;
     Node_shutdown_handler m_node_shutdown_handler;
-
-    // Configuration
+    Replacement_pending_handler m_replacement_pending_handler;
     std::vector<uint8_t> m_miner_pubkey;
     std::vector<uint8_t> m_miner_privkey;
     std::string m_reward_address;

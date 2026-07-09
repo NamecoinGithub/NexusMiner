@@ -1817,6 +1817,16 @@ bool MiningTemplateInterface::take_expired_replacement_pending(std::string& reas
     return true;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+MiningTemplateInterface::get_replacement_pending_deadline() const
+{
+    std::lock_guard<std::mutex> lock(m_template_mutex);
+    if (!m_replacement_pending) {
+        return std::nullopt;
+    }
+    return m_replacement_deadline;
+}
+
 bool MiningTemplateInterface::needs_channel_height_finalization() const
 {
     std::lock_guard<std::mutex> lock(m_template_mutex);

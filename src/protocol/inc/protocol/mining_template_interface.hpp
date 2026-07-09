@@ -9,6 +9,7 @@
 #include <functional>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include "LLP/block.hpp"
 #include "network/types.hpp"
 #include "protocol/get_block_reason.hpp"
@@ -473,7 +474,20 @@ public:
      *         discard_template() to enter the normal recovery path.
      */
     bool take_expired_replacement_pending(std::string& reason);
-    
+
+    /**
+     * @brief Get the deadline of an in-flight replacement-pending window, if any.
+     *
+     * Lets callers that own timer infrastructure (e.g. Worker_manager) schedule
+     * a dedicated one-shot check exactly at the deadline, rather than relying
+     * solely on a slower general-purpose polling cadence to eventually notice
+     * an expired take_expired_replacement_pending(). Returns std::nullopt when
+     * no replacement is currently pending.
+     *
+     * @return steady_clock deadline iff a replacement is pending, else nullopt.
+     */
+    std::optional<std::chrono::steady_clock::time_point> get_replacement_pending_deadline() const;
+
     /**
      * @brief Get current template height
      * 

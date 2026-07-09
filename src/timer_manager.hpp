@@ -4,6 +4,7 @@
 #include "chrono/timer_factory.hpp"
 #include "chrono/timer.hpp"
 
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -53,6 +54,17 @@ public:
     void start_lane_health_check_timer(std::uint16_t timer_interval,
         std::weak_ptr<Worker_manager> worker_manager);
 
+    // Replacement-pending deadline timer (one-shot).
+    // Armed by Worker_manager whenever a PUSH notification leaves the current
+    // template marked replacement-pending, with the delay set to the exact
+    // remaining time until the deadline. Fires check_template_health() once
+    // at (or slightly after) the deadline so an expired promise is caught
+    // immediately rather than waiting for the next 30s general-purpose poll
+    // tick. Re-arming (start()) before the previous deadline fires simply
+    // cancels and reschedules — no proliferation of timer objects.
+    void start_replacement_pending_timer(std::chrono::milliseconds delay,
+        std::weak_ptr<Worker_manager> worker_manager);
+
     void stop();
 
 private:
@@ -71,6 +83,8 @@ private:
     chrono::Timer::Handler lane_health_check_handler(std::uint16_t health_check_interval,
         std::weak_ptr<Worker_manager> worker_manager);
 
+    chrono::Timer::Handler replacement_pending_handler(std::weak_ptr<Worker_manager> worker_manager);
+
     chrono::Timer_factory::Sptr m_timer_factory;
     chrono::Timer::Uptr m_connection_retry_timer;
     chrono::Timer::Uptr m_stats_collector_timer;
@@ -78,6 +92,7 @@ private:
     chrono::Timer::Uptr m_get_round_timer;  // Template Staleness Prevention
     chrono::Timer::Uptr m_template_health_timer;  // Template Health Monitoring
     chrono::Timer::Uptr m_lane_health_check_timer;  // Periodic lane health log
+    chrono::Timer::Uptr m_replacement_pending_timer;  // One-shot replacement-pending deadline check
 };
 }
 
