@@ -984,10 +984,9 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 auto mgr = self.lock();
                 if (!mgr) return;
                 auto now = std::chrono::steady_clock::now();
-                auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-                if (delay < std::chrono::milliseconds(0)) {
-                    delay = std::chrono::milliseconds(0);
-                }
+                auto delay = std::max(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now),
+                    std::chrono::milliseconds(0));
                 mgr->m_timer_manager.start_replacement_pending_timer(delay, mgr);
             }
         );
