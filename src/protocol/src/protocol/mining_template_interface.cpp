@@ -2,6 +2,7 @@
 #include "protocol/protocol_constants.hpp"
 #include "LLP/block_utils.hpp"
 #include "worker/worker.hpp"
+#include "worker/block_header_utils.hpp"
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -91,6 +92,8 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     result.height_valid = false;
     result.bits_valid = false;
     result.channel_valid = false;
+    result.prime_origins_valid = true;
+    result.retry_reason = GetBlockReason::VALIDATION_FAILURE;
     
     m_templates_received.fetch_add(1, std::memory_order_relaxed);
     
@@ -612,7 +615,12 @@ bool MiningTemplateInterface::feed_current_template()
     m_current_template.state = TemplateState::VALID;
 
     // Feed to handlers
-    m_feed_handler(m_current_template, m_current_template.nBits);
+    const bool handler_accepted = m_feed_handler(m_current_template, m_current_template.nBits);
+    if (!handler_accepted) {
+        m_logger->warn("[TemplateInterface] FEED: Handler rejected template at height {}",
+            m_current_template.block.nHeight);
+        return false;
+    }
 
     m_templates_fed.fetch_add(1, std::memory_order_relaxed);
 
@@ -1295,6 +1303,16 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
     } else {
         m_logger->info("[TemplateInterface] ✓ Difficulty validation passed");
     }
+
+    if (!HasSufficientPrimeOrigins(tmpl.block)) {
+        result.prime_origins_valid = false;
+        result.is_valid = false;
+        result.retry_reason = GetBlockReason::PRIME_ORIGIN_TOO_LOW;
+        result.error_message = "Prime origins below 1016-bits (ProofHash < bnPrimeMinOrigins)";
+        m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
+        return result;
+    }
+    m_logger->debug("[TemplateInterface] ✓ Prime origins validation passed");
     
     // Validate merkle root is not all zeros (basic sanity check)
     bool merkle_all_zeros = true;

@@ -905,6 +905,7 @@ int main()
         bool block_handler_called = false;
         solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
             block_handler_called = true;
+            return true;
         });
 
         network::Payload payload = create_template_delivery_payload(9300, 100, 0x1d00ffff, 9301, 2);
@@ -934,6 +935,7 @@ int main()
         bool block_handler_called = false;
         solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
             block_handler_called = true;
+            return true;
         });
 
         network::Payload payload = create_template_delivery_payload(9400, 100, 0x1d00ffff, 9401, 2);
@@ -963,6 +965,7 @@ int main()
         bool block_handler_called = false;
         solo.set_block_handler([&block_handler_called](const ::LLP::CBlock&, uint32_t) {
             block_handler_called = true;
+            return true;
         });
 
         Packet zero_request(static_cast<uint8_t>(MinerLLP::GET_BLOCK));
@@ -1011,6 +1014,7 @@ int main()
         int block_handler_calls = 0;
         solo.set_block_handler([&block_handler_calls](const ::LLP::CBlock&, uint32_t) {
             ++block_handler_calls;
+            return true;
         });
 
         // Step 1: Install initial template (height=9501, channel_height=100)

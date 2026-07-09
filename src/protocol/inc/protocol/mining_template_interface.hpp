@@ -11,6 +11,7 @@
 #include <mutex>
 #include "LLP/block.hpp"
 #include "network/types.hpp"
+#include "protocol/get_block_reason.hpp"
 #include "protocol/height_tracker.hpp"
 #include "protocol/session_binding.hpp"
 #include "protocol/session_identity.hpp"
@@ -60,6 +61,8 @@ public:
         bool height_valid;          // Height is valid (> current)
         bool bits_valid;            // Difficulty bits are valid
         bool channel_valid;         // Channel matches expected
+        bool prime_origins_valid{true}; // Prime ProofHash() meets bnPrimeMinOrigins
+        GetBlockReason retry_reason{GetBlockReason::VALIDATION_FAILURE};
         std::chrono::microseconds validation_time;
     };
     
@@ -129,7 +132,7 @@ public:
     /**
      * @brief Template feed callback type
      */
-    using TemplateFeedHandler = std::function<void(const MiningTemplate& tmpl, uint32_t nBits)>;
+    using TemplateFeedHandler = std::function<bool(const MiningTemplate& tmpl, uint32_t nBits)>;
     
     /**
      * @brief Template validation failure callback type

@@ -533,10 +533,11 @@ void NodeSession::apply_protocol_handlers(LaneSlot slot)
         return;
     }
 
-    protocol->set_block_handler([this](const ::LLP::CBlock& block, uint32_t nBits) {
+    protocol->set_block_handler([this](const ::LLP::CBlock& block, uint32_t nBits) -> bool {
         if (m_template_handler) {
-            m_template_handler(block, nBits);
+            return m_template_handler(block, nBits);
         }
+        return false;
     });
 
     protocol->set_block_accepted_handler(

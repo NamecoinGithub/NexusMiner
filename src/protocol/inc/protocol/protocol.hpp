@@ -40,7 +40,7 @@ class Protocol {
 public:
 
     using Login_handler = std::function<void(bool login_result)>;
-    using Set_block_handler = std::function<void(::LLP::CBlock block, std::uint32_t nBits)>;
+    using Set_block_handler = std::function<bool(::LLP::CBlock block, std::uint32_t nBits)>;
 
     virtual ~Protocol() = default;
 
