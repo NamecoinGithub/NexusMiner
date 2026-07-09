@@ -432,7 +432,7 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
     
     // Setup template feed handler - called automatically when templates are validated
     m_template_interface->set_template_feed_handler(
-        [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) {
+        [this](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t nBits) -> bool {
             // Log new template (infrequent: once per block, typically every few minutes)
             m_logger->info("[Solo] ═══════════════════════════════════════");
             m_logger->info("[Solo] 🆕 NEW MINING TEMPLATE RECEIVED");
@@ -473,10 +473,16 @@ Solo::Solo(std::uint8_t channel, std::shared_ptr<stats::Collector> stats_collect
             // This handler is only invoked if the template passes the unified debounce gate
             if (m_set_block_handler) {
                 m_logger->info("[Solo] Distributing template to worker threads...");
-                m_set_block_handler(tmpl.block, nBits);
-                m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
+                const bool accepted = m_set_block_handler(tmpl.block, nBits);
+                if (accepted) {
+                    m_logger->info("[Solo] ✓ Template distributed - workers should start mining");
+                } else {
+                    m_logger->error("[Solo] Template feed rejected by worker layer");
+                }
+                return accepted;
             } else {
                 m_logger->error("[Solo] CRITICAL: No block handler registered!");
+                return false;
             }
         }
     );
@@ -1140,7 +1146,10 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     }
 
     if (!m_template_interface->feed_current_template()) {
-        m_logger->debug("[{}] Template feed suppressed by unified debounce gate", log_scope);
+        m_logger->debug("[{}] Template feed not accepted; TemplateInterface logged whether this was "
+                        "debounce suppression, missing handler, or worker-layer rejection",
+                        log_scope);
+        return false;
     } else {
         m_last_template_adopted_at = std::chrono::steady_clock::now();
         // Record successful feed for the unified-height guard.

@@ -65,7 +65,7 @@ public:
      * @param block Block data
      * @param nBits Difficulty bits
      */
-    using Template_handler = std::function<void(const ::LLP::CBlock& block, uint32_t nBits)>;
+    using Template_handler = std::function<bool(const ::LLP::CBlock& block, uint32_t nBits)>;
 
     /**
      * @brief Block accepted handler

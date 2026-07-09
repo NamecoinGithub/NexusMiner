@@ -144,7 +144,7 @@ void test_first_feed_invokes_block_handler_only()
 
     int block_handler_calls = 0;
     int recovery_confirmed_calls = 0;
-    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; });
+    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; return true; });
     solo->set_recovery_confirmed_handler([&]() { ++recovery_confirmed_calls; });
 
     auto payload = make_block_payload(6771846, 0xAA);
@@ -165,7 +165,7 @@ void test_same_tip_reconfirmation_fires_recovery_confirmed_not_block_handler()
 
     int block_handler_calls = 0;
     int recovery_confirmed_calls = 0;
-    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; });
+    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; return true; });
     solo->set_recovery_confirmed_handler([&]() { ++recovery_confirmed_calls; });
 
     // Initial feed establishes m_last_fed_unified_height / m_last_fed_hash_prev_block.
@@ -197,7 +197,7 @@ void test_genuinely_new_tip_bypasses_guard()
 
     int block_handler_calls = 0;
     int recovery_confirmed_calls = 0;
-    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; });
+    solo->set_block_handler([&](::LLP::CBlock, std::uint32_t) { ++block_handler_calls; return true; });
     solo->set_recovery_confirmed_handler([&]() { ++recovery_confirmed_calls; });
 
     auto payload1 = make_block_payload(6771846, 0xAA);

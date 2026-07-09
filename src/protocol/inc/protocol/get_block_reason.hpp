@@ -77,6 +77,10 @@ inline bool should_bypass_all_dedup(GetBlockReason reason)
         // the node has not yet delivered a PUSH/BLOCK_DATA replacement.  This
         // request must never be suppressed by rapid-burst or height dedup state.
         case GetBlockReason::BLOCK_ACCEPTED:
+        // Dead-on-arrival Prime templates can recur at the same height and may
+        // be discovered immediately after another GET_BLOCK; neither height
+        // nor rapid-burst dedup should suppress the replacement request.
+        case GetBlockReason::PRIME_ORIGIN_TOO_LOW:
         // When there is genuinely no valid template the height-based guard can
         // never fire (no template → guard passes), but the 100ms rapid-burst
         // guard can still suppress legitimate retries from the 30s health timer
@@ -143,13 +147,6 @@ inline bool should_bypass_height_dedup(GetBlockReason reason)
         // Dedup state is reset before calling get_work() in these paths, so only
         // the height guard needs bypassing (burst guard won't fire on first call).
         case GetBlockReason::BLOCK_REJECTED:
-
-        // Dead-on-arrival template: the height hasn't changed, but this exact
-        // template can never produce a block the node will accept (its
-        // ProofHash() is fixed below bnPrimeMinOrigins). Bypass height dedup
-        // so the miner doesn't get stuck re-requesting a template at the
-        // same height indefinitely.
-        case GetBlockReason::PRIME_ORIGIN_TOO_LOW:
 
             return true;
 

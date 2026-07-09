@@ -14,7 +14,9 @@
 #include "protocol/mining_template_interface.hpp"
 #include "protocol/height_tracker.hpp"
 #include "LLP/block.hpp"
+#include "LLP/block_utils.hpp"
 #include "LLP/miner_opcodes.hpp"
+#include "worker/block_header_utils.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdint>
@@ -1166,6 +1168,7 @@ int main()
             [&](const MiningTemplateInterface::MiningTemplate& tmpl, uint32_t) {
                 ++feed_count;
                 fed_channel_height = tmpl.nChannelHeight;
+                return true;
             });
 
         auto recovery_data = create_mock_template(6594322, 0x1d00ffff, 2);
@@ -1434,6 +1437,59 @@ int main()
                                  stale_hash != snap_zero.hash_prev_block);
         print_test_result("Mismatch guard inactive when HeightTracker hash_prev_block is zero",
             guard_inactive);
+    }
+
+    // ====================================================================
+    // Test 37: PRIME_ORIGIN_TOO_LOW is rejected before the template becomes valid
+    // ====================================================================
+    std::cout << "\nTest 37: PRIME_ORIGIN_TOO_LOW rejected during template validation" << std::endl;
+    {
+        auto data = create_mock_template(6650000, 0x1d00ffff, 1);
+        bool found_low_origin = false;
+
+        for (uint32_t salt = 0; salt < 2000; ++salt) {
+            // Mutate the Merkle root, which is part of Prime ProofHash().
+            data[132] = static_cast<uint8_t>(salt & 0xff);
+            data[133] = static_cast<uint8_t>((salt >> 8) & 0xff);
+
+            auto block = nexusminer::llp_utils::deserialize_block_header(data);
+            if (!nexusminer::HasSufficientPrimeOrigins(block)) {
+                found_low_origin = true;
+                break;
+            }
+        }
+
+        MiningTemplateInterface tmpl_interface(1, 0);
+        auto res = tmpl_interface.read_template(data, "test_node", false);
+
+        print_test_result("Test 37: fixture found a low-prime-origin template", found_low_origin);
+        print_test_result("Test 37: validation rejects PRIME_ORIGIN_TOO_LOW", !res.is_valid);
+        print_test_result("Test 37: retry reason is PRIME_ORIGIN_TOO_LOW",
+            res.retry_reason == GetBlockReason::PRIME_ORIGIN_TOO_LOW);
+        print_test_result("Test 37: current template was never marked valid",
+            !tmpl_interface.has_valid_template());
+    }
+
+    // ====================================================================
+    // Test 38: Feed handler rejection propagates to feed_current_template()
+    // ====================================================================
+    std::cout << "\nTest 38: Template feed handler rejection propagates" << std::endl;
+    {
+        MiningTemplateInterface tmpl_interface(2, 0);
+        int feed_count = 0;
+        tmpl_interface.set_template_feed_handler(
+            [&](const MiningTemplateInterface::MiningTemplate&, uint32_t) {
+                ++feed_count;
+                return false;
+            });
+
+        auto data = create_mock_template(6650001, 0x1d00ffff, 2);
+        auto res = tmpl_interface.read_template(data, "test_node", false);
+        const bool fed = tmpl_interface.feed_current_template();
+
+        print_test_result("Test 38: template validates before rejected feed", res.is_valid);
+        print_test_result("Test 38: feed handler called once", feed_count == 1);
+        print_test_result("Test 38: feed_current_template reports worker rejection", !fed);
     }
 
     // ====================================================================

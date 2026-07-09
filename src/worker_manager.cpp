@@ -190,10 +190,10 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Connects protocol layer (validated templates) to worker layer (mining threads) */
         /* This lambda is called by the template feed handler (PR #62) when templates arrive */
         m_primary_node_session->set_template_handler(
-            [this](const ::LLP::CBlock& block, uint32_t nBits) {
+            [this](const ::LLP::CBlock& block, uint32_t nBits) -> bool {
                 if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
                     m_logger->warn("[Worker_manager] Ignoring template after terminal stop request");
-                    return;
+                    return false;
                 }
 
                 if (m_node_shutdown_quarantine.load(std::memory_order_acquire)) {
@@ -203,7 +203,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         m_logger->warn("[Worker_manager] Ignoring template from NODE_SHUTDOWN generation "
                                        "(current={}, shutdown={})",
                                        current_generation, shutdown_generation);
-                        return;
+                        return false;
                     }
                 }
 
@@ -222,7 +222,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                                     "-- discarding without mining, requesting fresh template",
                                     block.nHeight, block.nChannel);
                     retry_template_request(protocol::GetBlockReason::PRIME_ORIGIN_TOO_LOW);
-                    return;
+                    return false;
                 }
 
                 std::size_t worker_count = 0;
@@ -279,7 +279,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                         m_logger->error("[Worker_manager] CRITICAL: No workers available for mining!");
                         m_logger->error("[Worker_manager]   Workers may not be initialized yet");
                         m_logger->error("[Worker_manager]   Template will be lost - mining cannot start");
-                        return;
+                        return false;
                     }
 
                     /* Create shared WorkPackage once for all workers */
@@ -644,6 +644,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                             }
                         }
                     }
+                    return true;
                 } else {
                     m_logger->error("[Worker_manager] FAILED: No workers received template!");
                     // Immediately request fresh work/GET_BLOCK — don't wait 30s for health monitor.
@@ -651,6 +652,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     mark_recovery_initiated("template_distribution_failed");
                     stop_all_workers();
                     retry_template_request(protocol::GetBlockReason::TEMPLATE_FEED_FAILURE);
+                    return false;
                 }
             }
         );
@@ -682,7 +684,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     
                     // Request fresh work/GET_BLOCK
                     mark_recovery_initiated("template_validation_failed");
-                    retry_template_request(protocol::GetBlockReason::VALIDATION_FAILURE);
+                    retry_template_request(result.retry_reason);
                 }
             );
             m_logger->info("[Worker_manager] Validation failure handler registered");
