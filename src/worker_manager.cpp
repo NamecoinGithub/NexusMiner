@@ -257,10 +257,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // template first before exiting recovery state.
                 // ═══════════════════════════════════════════════════════════════
 
-                // Bug 1 fix: In degraded mode, workers may have been stopped and reset
-                // by stop_all_workers().  Restart them now so set_block() below actually
-                // starts mining threads; without this the template is silently dropped and
-                // workers_fed falsely reads 0 keeping the miner in a doom loop.
+                // Recovery restart guard: workers may have been stopped and reset
+                // by stop_all_workers().  Restart them now so set_block() below
+                // actually starts mining threads; without this the template is
+                // silently dropped and workers_fed falsely reads 0 keeping the
+                // miner in a doom loop.
                 size_t workers_fed = 0;
                 size_t total_worker_count = 0;
                 std::vector<std::shared_ptr<Worker>> worker_snapshot;
@@ -268,8 +269,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 std::shared_ptr<WorkerTemplateFeed> feed_snapshot;
                 {
                     std::lock_guard<std::mutex> lock(m_worker_mutex);
-                    if (is_degraded() && !m_recovery_workers_spawned && m_workers.empty()) {
-                        m_logger->info("[Worker_manager] Degraded mode: restarting workers before feeding recovery template");
+                    if (is_recovery_active() && !m_recovery_workers_spawned && m_workers.empty()) {
+                        m_logger->info("[Worker_manager] Recovery mode: restarting workers before feeding recovery template");
                         create_workers_locked();
                         m_recovery_workers_spawned = !m_workers.empty();  // set AFTER success for exception safety
                     }
@@ -673,14 +674,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     m_logger->error("[Worker_manager]    Reason: {}", result.error_message);
                     m_logger->error("[Worker_manager] ════════════════════════════════════════");
                     
-                    // Stop all workers
-                    stop_all_workers();
-                    
-                    // NOTE: create_workers() intentionally omitted here.
-                    // Worker recreation is handled by recovery_initiated_handler (for push staleness)
-                    // or by the block distribution handler's degraded-mode guard when the recovery
-                    // template arrives. Calling create_workers() here causes duplicate workers when
-                    // both handlers fire for the same staleness event.
+                    // Template hygiene failures are template-local, not session
+                    // failures.  Keep the current workers alive (or idle) while
+                    // requesting replacement work so a single dead-on-arrival
+                    // template cannot strand the miner with no worker/stat timer
+                    // activity.  Full worker stops remain reserved for session
+                    // recovery, transport reconnect, degraded mode, and true
+                    // template distribution failures.
                     
                     // Request fresh work/GET_BLOCK
                     mark_recovery_initiated("template_validation_failed");

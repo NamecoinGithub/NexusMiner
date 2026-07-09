@@ -955,6 +955,18 @@ void test_recovery_handler_reason_routing() {
     print_test_result("VALIDATION_FAILURE still retries GET_BLOCK once",
         soft_validation.retry_calls == 1);
 
+    RecoveryHandlerHarness soft_prime_origin;
+    bool soft_prime_origin_sent = soft_prime_origin.invoke(GetBlockReason::PRIME_ORIGIN_TOO_LOW);
+    print_test_result("PRIME_ORIGIN_TOO_LOW remains a soft template-hygiene retry", soft_prime_origin_sent);
+    print_test_result("PRIME_ORIGIN_TOO_LOW does not mark recovery initiated",
+        soft_prime_origin.mark_calls == 0);
+    print_test_result("PRIME_ORIGIN_TOO_LOW leaves phase HEALTHY",
+        soft_prime_origin.phase == RecoveryHandlerHarness::Phase::HEALTHY);
+    print_test_result("PRIME_ORIGIN_TOO_LOW leaves recovery epoch unchanged",
+        soft_prime_origin.recovery_epoch == 0);
+    print_test_result("PRIME_ORIGIN_TOO_LOW still retries GET_BLOCK once",
+        soft_prime_origin.retry_calls == 1);
+
     RecoveryHandlerHarness hard_forced;
     bool hard_forced_sent = hard_forced.invoke(GetBlockReason::RECOVERY_FORCED);
     print_test_result("RECOVERY_FORCED schedules a retry", hard_forced_sent);
