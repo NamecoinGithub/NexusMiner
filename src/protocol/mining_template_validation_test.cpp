@@ -1476,10 +1476,11 @@ int main()
     std::cout << "\nTest 38: Template feed handler rejection propagates" << std::endl;
     {
         MiningTemplateInterface tmpl_interface(2, 0);
-        int feed_count = 0;
+        int rejected_feed_count = 0;
+        int accepted_feed_count = 0;
         tmpl_interface.set_template_feed_handler(
             [&](const MiningTemplateInterface::MiningTemplate&, uint32_t) {
-                ++feed_count;
+                ++rejected_feed_count;
                 return false;
             });
 
@@ -1488,8 +1489,23 @@ int main()
         const bool fed = tmpl_interface.feed_current_template();
 
         print_test_result("Test 38: template validates before rejected feed", res.is_valid);
-        print_test_result("Test 38: feed handler called once", feed_count == 1);
+        print_test_result("Test 38: rejecting feed handler called once", rejected_feed_count == 1);
         print_test_result("Test 38: feed_current_template reports worker rejection", !fed);
+        print_test_result("Test 38: rejected feed clears current template state",
+            !tmpl_interface.has_valid_template());
+
+        tmpl_interface.set_template_feed_handler(
+            [&](const MiningTemplateInterface::MiningTemplate&, uint32_t) {
+                ++accepted_feed_count;
+                return true;
+            });
+
+        auto retry_res = tmpl_interface.read_template(data, "test_node", false);
+        const bool retry_fed = tmpl_interface.feed_current_template();
+
+        print_test_result("Test 38: same template can be retried immediately after rejection",
+            retry_res.is_valid && retry_fed);
+        print_test_result("Test 38: accepting retry handler called once", accepted_feed_count == 1);
     }
 
     // ====================================================================

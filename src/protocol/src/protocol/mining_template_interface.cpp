@@ -572,8 +572,8 @@ bool MiningTemplateInterface::feed_current_template()
     // This is the SINGLE AUTHORITATIVE debounce gate for the entire system.
     // Both Solo's BLOCK_DATA handler and Worker_manager's set_block flow rely on
     // this check to suppress duplicates at the source.
+    const auto now = std::chrono::steady_clock::now();
     {
-        auto now = std::chrono::steady_clock::now();
         auto ms_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - m_last_feed_tp).count();
 
@@ -602,25 +602,25 @@ bool MiningTemplateInterface::feed_current_template()
                            m_current_template.block.nHeight);
         }
 
-        // Record this feed for next duplicate check
-        m_last_feed_tp = now;
-        m_last_feed_height = m_current_template.block.nHeight;
-        m_last_feed_prev_hash = m_current_template.block.hashPrevBlock;
     }
 
     m_logger->info("[TemplateInterface] FEED: Feeding template at height {} to workers",
         m_current_template.block.nHeight);
-
-    // Update state to active since it's being fed to workers
-    m_current_template.state = TemplateState::VALID;
 
     // Feed to handlers
     const bool handler_accepted = m_feed_handler(m_current_template, m_current_template.nBits);
     if (!handler_accepted) {
         m_logger->warn("[TemplateInterface] FEED: Handler rejected template at height {}",
             m_current_template.block.nHeight);
+        mark_template_stale_unsafe("feed handler rejected template");
         return false;
     }
+
+    // Record this feed for next duplicate check only after the worker layer
+    // accepts the template.
+    m_last_feed_tp = now;
+    m_last_feed_height = m_current_template.block.nHeight;
+    m_last_feed_prev_hash = m_current_template.block.hashPrevBlock;
 
     m_templates_fed.fetch_add(1, std::memory_order_relaxed);
 
