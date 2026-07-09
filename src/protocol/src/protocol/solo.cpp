@@ -4346,6 +4346,16 @@ void Solo::on_push_notification(Packet const& packet, std::shared_ptr<network::C
             (channel == m_channel) ? "same" : "cross");
     }
 
+    // If this push left the template marked replacement-pending (same-height
+    // tip update), notify Worker_manager with the deadline so it can arm a
+    // precise one-shot timeout check rather than waiting on the next slower
+    // general-purpose template-health poll tick.
+    if (m_template_interface && m_replacement_pending_handler) {
+        if (auto deadline = m_template_interface->get_replacement_pending_deadline()) {
+            m_replacement_pending_handler(*deadline);
+        }
+    }
+
     // Record push timestamp and cancel any pending NEW_ROUND recovery debounce.
     // A PUSH arriving means the node has signalled a new block — BLOCK_DATA will
     // follow automatically, so a deferred recovery GET_BLOCK is no longer needed.

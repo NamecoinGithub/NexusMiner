@@ -21,6 +21,7 @@ Timer_manager::Timer_manager(chrono::Timer_factory::Sptr timer_factory)
     m_get_round_timer = m_timer_factory->create_timer();  // Template Staleness Prevention
     m_template_health_timer = m_timer_factory->create_timer();  // Template Health Monitoring
     m_lane_health_check_timer = m_timer_factory->create_timer();  // SIM Link lane health log
+    m_replacement_pending_timer = m_timer_factory->create_timer();  // Replacement-pending deadline check
 }
 
 void Timer_manager::start_connection_retry_timer(std::uint16_t timer_interval, std::weak_ptr<Worker_manager> worker_manager, 
@@ -55,6 +56,7 @@ void Timer_manager::stop()
     m_get_round_timer->cancel();  // Template Staleness Prevention
     m_template_health_timer->cancel();  // Template Health Monitoring
     m_lane_health_check_timer->cancel();  // Lane health log
+    m_replacement_pending_timer->cancel();  // Replacement-pending deadline check
 }
 
 chrono::Timer::Handler Timer_manager::connection_retry_handler(std::weak_ptr<Worker_manager> worker_manager,
@@ -305,6 +307,44 @@ chrono::Timer::Handler Timer_manager::lane_health_check_handler(std::uint16_t he
         // Always restart timer after callback completes (even if callback threw).
         m_lane_health_check_timer->start(chrono::Seconds(health_check_interval),
             lane_health_check_handler(health_check_interval, worker_manager));
+    };
+}
+
+void Timer_manager::start_replacement_pending_timer(std::chrono::milliseconds delay,
+    std::weak_ptr<Worker_manager> worker_manager)
+{
+    // Timer::start() cancels any prior outstanding wait before rescheduling, so
+    // repeated calls (e.g. one per PUSH that refreshes the pending deadline)
+    // simply re-arm to the new deadline rather than accumulating timers.
+    m_replacement_pending_timer->start(delay, replacement_pending_handler(std::move(worker_manager)));
+}
+
+chrono::Timer::Handler Timer_manager::replacement_pending_handler(std::weak_ptr<Worker_manager> worker_manager)
+{
+    // One-shot: do NOT reschedule itself on completion. Each arming call comes
+    // from Worker_manager reacting to a fresh replacement-pending mark with its
+    // own deadline, so there is no fixed cadence to restart here.
+    return [worker_manager](bool canceled)
+    {
+        if (canceled)
+        {
+            // Superseded by a newer deadline (or shutdown) — nothing to do.
+            return;
+        }
+
+        auto wm = worker_manager.lock();
+        if (!wm)
+        {
+            return;  // Worker_manager destroyed (shutdown)
+        }
+
+        try {
+            wm->check_template_health();
+        } catch (const std::exception& e) {
+            spdlog::error("[Timer_manager] replacement_pending_handler threw: {}", e.what());
+        } catch (...) {
+            spdlog::error("[Timer_manager] replacement_pending_handler threw unknown exception");
+        }
     };
 }
 

@@ -326,6 +326,17 @@ public:
     using Node_shutdown_handler = std::function<void(uint8_t reason)>;
     void set_node_shutdown_handler(Node_shutdown_handler h) { m_node_shutdown_handler = std::move(h); }
 
+    // Replacement-pending callback: invoked after a PUSH notification leaves the
+    // current template marked replacement-pending (mark_replacement_pending()),
+    // with the deadline by which the promised BLOCK_DATA must arrive. Lets
+    // Worker_manager schedule a dedicated one-shot timer that fires exactly at
+    // the deadline, instead of relying solely on the slower general-purpose
+    // template-health polling cadence to eventually notice an expired window
+    // (see take_expired_replacement_pending()).
+    using Replacement_pending_handler =
+        std::function<void(std::chrono::steady_clock::time_point deadline)>;
+    void set_replacement_pending_handler(Replacement_pending_handler h) { m_replacement_pending_handler = std::move(h); }
+
     // Reconnect backoff (seconds) after receiving NODE_SHUTDOWN from the node.
     static constexpr uint32_t NODE_SHUTDOWN_BACKOFF_S = 60;
 
@@ -837,6 +848,11 @@ private:
     // Node-shutdown callback — invoked on NODE_SHUTDOWN (0xD0FF) to stop workers
     // and set reconnect backoff.
     Node_shutdown_handler m_node_shutdown_handler;
+
+    // Replacement-pending callback — invoked after a PUSH notification marks the
+    // current template replacement-pending, carrying the deadline so
+    // Worker_manager can schedule a precise one-shot timeout check.
+    Replacement_pending_handler m_replacement_pending_handler;
 
     // Last submitted block gate/state — carried forward from submit_block() so the
     // ACCEPT/GOOD_BLOCK handler uses the actual submitted values rather than

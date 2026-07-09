@@ -973,6 +973,25 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         );
         m_logger->info("[Worker_manager] Node shutdown handler registered");
 
+        // Replacement-pending handler: arm a precise one-shot timer at the exact
+        // deadline reported by mark_replacement_pending() (via the PUSH path),
+        // so an expired "BLOCK_DATA never arrived" promise is caught immediately
+        // instead of waiting out the remainder of the 30s general-purpose
+        // template-health poll cycle. See check_template_health()'s
+        // replacement-pending safety net for the actual expiry handling.
+        m_primary_node_session->set_replacement_pending_handler(
+            [self = weak_from_this()](std::chrono::steady_clock::time_point deadline) {
+                auto mgr = self.lock();
+                if (!mgr) return;
+                auto now = std::chrono::steady_clock::now();
+                auto delay = std::max(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now),
+                    std::chrono::milliseconds(0));
+                mgr->m_timer_manager.start_replacement_pending_timer(delay, mgr);
+            }
+        );
+        m_logger->info("[Worker_manager] Replacement-pending handler registered");
+
         m_logger->info("[Worker_manager] NodeSession configured and handlers registered");
 
     create_stats_printers();
