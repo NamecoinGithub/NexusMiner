@@ -92,7 +92,7 @@ MiningTemplateInterface::read_template(const network::Payload& data,
     result.height_valid = false;
     result.bits_valid = false;
     result.channel_valid = false;
-    result.prime_origins_valid = true;
+    result.prime_origins_valid = false;
     result.retry_reason = GetBlockReason::VALIDATION_FAILURE;
     
     m_templates_received.fetch_add(1, std::memory_order_relaxed);
@@ -1312,6 +1312,7 @@ MiningTemplateInterface::validate_template(const MiningTemplate& tmpl)
         m_logger->error("[TemplateInterface] ❌ VALIDATION FAILED: {}", result.error_message);
         return result;
     }
+    result.prime_origins_valid = true;
     m_logger->debug("[TemplateInterface] ✓ Prime origins validation passed");
     
     // Validate merkle root is not all zeros (basic sanity check)

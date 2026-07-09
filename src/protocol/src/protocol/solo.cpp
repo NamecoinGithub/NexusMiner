@@ -1146,7 +1146,9 @@ bool Solo::finalize_and_feed_current_template(uint32_t unified_height,
     }
 
     if (!m_template_interface->feed_current_template()) {
-        m_logger->debug("[{}] Template feed suppressed or rejected by unified feed gate", log_scope);
+        m_logger->debug("[{}] Template feed not accepted; TemplateInterface logged whether this was "
+                        "debounce suppression, missing handler, or worker-layer rejection",
+                        log_scope);
         return false;
     } else {
         m_last_template_adopted_at = std::chrono::steady_clock::now();

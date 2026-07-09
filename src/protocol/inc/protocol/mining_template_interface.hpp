@@ -61,7 +61,7 @@ public:
         bool height_valid;          // Height is valid (> current)
         bool bits_valid;            // Difficulty bits are valid
         bool channel_valid;         // Channel matches expected
-        bool prime_origins_valid{true}; // Prime ProofHash() meets bnPrimeMinOrigins
+        bool prime_origins_valid{false}; // Prime ProofHash() meets bnPrimeMinOrigins, or check is not applicable
         GetBlockReason retry_reason{GetBlockReason::VALIDATION_FAILURE};
         std::chrono::microseconds validation_time;
     };
