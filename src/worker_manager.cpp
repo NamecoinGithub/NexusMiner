@@ -2956,14 +2956,7 @@ int64_t Worker_manager::compute_worst_case_outage_seconds(int64_t degraded_secs,
     // spurious negative age.
     since_lane_alive_s = std::max<int64_t>(since_lane_alive_s, 0);
 
-    int64_t worst = degraded_secs;
-    if (since_push_s > worst) {
-        worst = since_push_s;
-    }
-    if (since_lane_alive_s > worst) {
-        worst = since_lane_alive_s;
-    }
-    return worst;
+    return std::max({degraded_secs, since_push_s, since_lane_alive_s});
 }
 
 void Worker_manager::check_template_health()
