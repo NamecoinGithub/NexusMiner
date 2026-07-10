@@ -56,7 +56,10 @@ void LivenessWatchdog::stop()
 
 void LivenessWatchdog::schedule_heartbeat()
 {
-    m_heartbeat_timer->start(chrono::Seconds(static_cast<int>(m_heartbeat_interval.count())),
+    // m_heartbeat_interval is already a std::chrono::seconds (== chrono::Seconds),
+    // so pass it through directly rather than round-tripping via int (which
+    // would silently truncate for values beyond INT_MAX).
+    m_heartbeat_timer->start(m_heartbeat_interval,
         [this](bool canceled) {
             if (canceled) {
                 // stop() canceled this timer (graceful shutdown/restart) —

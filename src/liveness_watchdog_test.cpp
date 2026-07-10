@@ -119,7 +119,14 @@ void test_wedged_io_context_triggers_forced_exit()
         // executes and wedges.
         io->run();
 
-        // Should never reach here — the watchdog must have force-exited.
+        // This point should be unreachable in a correctly-behaving watchdog:
+        // io_context->run() only returns once its work queue is drained, but
+        // the posted handler above never returns (permanent deadlock), so
+        // run() blocks forever *unless* the watchdog's independent thread
+        // detects the stall first and calls std::_Exit(42) itself. Reaching
+        // this line at all means the watchdog failed to fire, so exit with a
+        // distinct failure code (1) that the parent's assertion below will
+        // reject (it only accepts exit code 42).
         std::_Exit(1);
     }
 
