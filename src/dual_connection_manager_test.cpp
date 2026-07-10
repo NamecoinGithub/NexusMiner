@@ -132,6 +132,37 @@ int main()
         std::cout << '\n';
     }
 
+    {
+        std::cout << "Test 8: Alive heartbeat tracks last known-alive moment\n";
+        DualConnectionManager mgr;
+        auto seeded_at = mgr.last_alive_at();
+        ok &= expect(seeded_at != std::chrono::steady_clock::time_point{},
+                     "Heartbeat seeded at construction (not epoch)");
+
+        // touch_alive_heartbeat() is a no-op while no lane is alive.
+        mgr.touch_alive_heartbeat();
+        ok &= expect(mgr.last_alive_at() == seeded_at,
+                     "Heartbeat unchanged while no lane is alive");
+
+        mgr.set_stateless_alive(true);
+        auto after_alive = mgr.last_alive_at();
+        ok &= expect(after_alive >= seeded_at,
+                     "Heartbeat refreshed when a lane becomes alive");
+
+        mgr.set_stateless_alive(false);
+        mgr.set_legacy_alive(false);
+        ok &= expect(!mgr.any_lane_alive(), "Both lanes dead after clearing");
+        auto stamp_before_touch = mgr.last_alive_at();
+        mgr.touch_alive_heartbeat();
+        ok &= expect(mgr.last_alive_at() == stamp_before_touch,
+                     "Heartbeat does not advance while all lanes are dead");
+
+        mgr.on_lane_recovered(ProtocolLane::LEGACY);
+        ok &= expect(mgr.last_alive_at() >= stamp_before_touch,
+                     "Heartbeat refreshed on lane recovery");
+        std::cout << '\n';
+    }
+
     std::cout << "========================================\n";
     std::cout << "Test Summary\n";
     std::cout << "========================================\n";

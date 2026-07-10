@@ -149,6 +149,23 @@ private:
 
     /// Log the three-tier mined-block cache summary.
     void log_mined_block_cache() const;
+
+    /// Unified "worst-case clock" aggregator (Option B compounding-failure fix).
+    ///
+    /// Returns the MAX of three independently-tracked staleness signals:
+    ///   - degraded_secs:    seconds since the current WAITING_TEMPLATE/no-valid-
+    ///                       template outage began (m_recovery.degraded_since)
+    ///   - since_push_s:     seconds since the last push notification was received
+    ///   - lane-alive age:   seconds since DualConnectionManager last confirmed at
+    ///                       least one lane alive (m_sim_link.last_alive_at())
+    ///
+    /// Escalation decisions (e.g. the 300s CONTROLLED_RECOVERY_HARD_STOP_SECONDS
+    /// hard-stop) should be driven off this single number rather than each
+    /// subsystem's timer in isolation, so a connectivity blip that started
+    /// before — or outlasts — the current template outage is not masked by a
+    /// template-only clock that looks "recent enough" on its own. See the
+    /// "Compounding-failure blind spot" analysis for background.
+    int64_t compute_worst_case_outage_seconds(int64_t degraded_secs, int64_t since_push_s) const;
     
     // Worker control methods for degraded mode
     void stop_all_workers();

@@ -35,12 +35,44 @@ public:
     DualConnectionManager() = default;
 
     // ── Lane liveness ────────────────────────────────────────────────────────
-    void set_stateless_alive(bool alive) { m_stateless_alive = alive; }
-    void set_legacy_alive(bool alive)    { m_legacy_alive    = alive; }
+    void set_stateless_alive(bool alive)
+    {
+        m_stateless_alive = alive;
+        if (alive) m_last_alive_at = std::chrono::steady_clock::now();
+    }
+    void set_legacy_alive(bool alive)
+    {
+        m_legacy_alive = alive;
+        if (alive) m_last_alive_at = std::chrono::steady_clock::now();
+    }
 
     bool is_stateless_alive() const { return m_stateless_alive; }
     bool is_legacy_alive()    const { return m_legacy_alive;    }
     bool any_lane_alive()     const { return m_stateless_alive || m_legacy_alive; }
+
+    // ── Aggregate liveness heartbeat ─────────────────────────────────────────
+    /// Timestamp of the most recent moment at least one lane was known-alive.
+    /// Seeded to construction time (lanes are assumed alive until proven
+    /// otherwise) and refreshed both on every alive-transition (see
+    /// set_stateless_alive(true)/set_legacy_alive(true)/on_lane_recovered())
+    /// and via an explicit periodic touch_alive_heartbeat() call from the
+    /// caller's health-check tick, so it behaves like a heartbeat rather than
+    /// a one-shot edge trigger. This feeds Worker_manager's worst-case outage
+    /// aggregator (max of "since last valid template", "since last push", and
+    /// "since any lane was alive") used to close compounding-failure gaps
+    /// where connectivity and template staleness overlap.
+    std::chrono::steady_clock::time_point last_alive_at() const { return m_last_alive_at; }
+
+    /// Explicitly refresh the heartbeat if at least one lane is currently
+    /// alive. Intended to be called on a periodic health-check tick so the
+    /// heartbeat reflects sustained liveness, not just alive transitions.
+    void touch_alive_heartbeat()
+    {
+        if (any_lane_alive())
+        {
+            m_last_alive_at = std::chrono::steady_clock::now();
+        }
+    }
 
     // ── Mining lane (immutable once set) ─────────────────────────────────────
     /// Set the lane the miner is actively mining on.  Called once during initial
@@ -107,6 +139,7 @@ public:
             m_stateless_alive = true;
         else
             m_legacy_alive = true;
+        m_last_alive_at = std::chrono::steady_clock::now();
     }
 
     // ── Failover tracking ────────────────────────────────────────────────────
@@ -129,6 +162,11 @@ public:
 private:
     bool m_stateless_alive{false};
     bool m_legacy_alive{false};
+
+    // Seeded to construction time so a freshly-started miner (no lane has
+    // failed yet) is not immediately treated as having a long-running outage
+    // by the worst-case outage aggregator; see last_alive_at() above.
+    std::chrono::steady_clock::time_point m_last_alive_at{std::chrono::steady_clock::now()};
 
     // The lane the miner is actively mining on — set once at connection time, never changed.
     ProtocolLane m_mining_lane{ProtocolLane::UNKNOWN};

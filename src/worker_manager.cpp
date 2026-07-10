@@ -2079,6 +2079,11 @@ void Worker_manager::log_lane_health()
 
     m_logger->info("[NodeSession] Session health — Authenticated: {}", primary_alive ? "YES" : "NO");
 
+    // Refresh the aggregate lane-alive heartbeat on every periodic tick so it
+    // reflects sustained liveness (not just alive-transition edges), matching
+    // how push liveness is tracked. Feeds compute_worst_case_outage_seconds().
+    m_sim_link.touch_alive_heartbeat();
+
     send_session_status_if_due();
 }
 
@@ -2942,6 +2947,18 @@ bool Worker_manager::retry_template_request_returning(protocol::GetBlockReason r
     }
 }
 
+int64_t Worker_manager::compute_worst_case_outage_seconds(int64_t degraded_secs, int64_t since_push_s) const
+{
+    auto now = std::chrono::steady_clock::now();
+    int64_t since_lane_alive_s = std::chrono::duration_cast<std::chrono::seconds>(
+        now - m_sim_link.last_alive_at()).count();
+    // Guard against clock skew / not-yet-initialized timestamps producing a
+    // spurious negative age.
+    since_lane_alive_s = std::max<int64_t>(since_lane_alive_s, 0);
+
+    return std::max({degraded_secs, since_push_s, since_lane_alive_s});
+}
+
 void Worker_manager::check_template_health()
 {
     if (m_terminal_stop_requested.load(std::memory_order_acquire)) {
@@ -2966,9 +2983,12 @@ void Worker_manager::check_template_health()
             int64_t push_age_s = push_received
                 ? std::chrono::duration_cast<std::chrono::seconds>(now - ht.last_push_notification_at).count()
                 : -1;
+            int64_t lane_alive_age_s = std::chrono::duration_cast<std::chrono::seconds>(
+                now - m_sim_link.last_alive_at()).count();
             m_logger->info("[Session Health] authenticated={} session=0x{:08x}"
                            " push={}s_ago unanswered_rounds={}"
                            " preflight_drops={} phase={}"
+                           " lane_alive={}s_ago"
                            " get_blocks_sent={} accepted={} rejected={}",
                            solo_protocol->is_authenticated(),
                            solo_protocol->get_session_id().get(),
@@ -2976,6 +2996,7 @@ void Worker_manager::check_template_health()
                            solo_protocol->get_unanswered_get_round_count(),
                            solo_protocol->get_preflight_reject_count(),
                            phase_name(m_recovery.phase.load(std::memory_order_relaxed)),
+                           lane_alive_age_s,
                            m_get_block_sent_total,
                            solo_protocol->get_blocks_accepted(),
                            solo_protocol->get_blocks_rejected());
@@ -3020,13 +3041,21 @@ void Worker_manager::check_template_health()
             : INT64_MAX;
         bool push_recent = push_received && (since_push_s <= PUSH_ALIVE_THRESHOLD_SECONDS);
 
-        m_logger->info("[Worker_manager] WAITING_TEMPLATE: {}s elapsed, push {}s ago (recent={})",
+        // Worst-case outage aggregator (Option B): take the MAX of template-outage
+        // duration, push silence, and lane-alive silence so a connectivity blip that
+        // started before (or outlasts) the current WAITING_TEMPLATE epoch cannot be
+        // masked by a template-only clock that looks "recent enough" in isolation.
+        int64_t worst_case_secs = compute_worst_case_outage_seconds(degraded_secs, since_push_s);
+
+        m_logger->info("[Worker_manager] WAITING_TEMPLATE: {}s elapsed, push {}s ago (recent={}), "
+                       "worst_case_outage={}s",
                        degraded_secs,
                        push_received ? since_push_s : static_cast<int64_t>(-1),
-                       push_recent ? "YES" : "NO");
+                       push_recent ? "YES" : "NO",
+                       worst_case_secs);
 
-        if (!push_recent && degraded_secs >= CONTROLLED_RECOVERY_HARD_STOP_SECONDS) {
-            m_logger->critical("[Worker_manager] Recovery exceeded {}s without live push traffic — "
+        if (!push_recent && worst_case_secs >= CONTROLLED_RECOVERY_HARD_STOP_SECONDS) {
+            m_logger->critical("[Worker_manager] Recovery exceeded {}s worst-case outage (template/push/lane) — "
                                "entering auto-recoverable degraded mode",
                                CONTROLLED_RECOVERY_HARD_STOP_SECONDS);
             enter_recoverable_degraded_mode("controlled_recovery_hard_stop");
