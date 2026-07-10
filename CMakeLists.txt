@@ -195,6 +195,7 @@ endif()
 
 # add submodules
 add_subdirectory(src/chrono)
+add_subdirectory(src/Util)
 add_subdirectory(src/network)
 add_subdirectory(src/LLP)
 add_subdirectory(src/LLC)

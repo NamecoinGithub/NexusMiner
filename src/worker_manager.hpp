@@ -12,6 +12,7 @@
 #include "LLC/types/uint1024.h"
 #include "stats/mined_block_cache.hpp"
 #include "Util/include/exponential_backoff.h"
+#include "Util/include/debug_lock_audit.h"
 #include "protocol/inc/protocol/protocol_constants.hpp"
 #include "protocol/inc/protocol/epoch_coordinator.hpp"
 #include "protocol/inc/protocol/get_block_reason.hpp"
@@ -456,7 +457,16 @@ private:
     // ── Mutex-based recovery gate (defense-in-depth) ─────────────────────────
     // Serialises the creation path in set_block_handler with the destruction
     // path in stop_all_workers() so they cannot interleave on m_workers.
-    std::mutex m_worker_mutex;
+    //
+    // Debug_tracked_mutex (see Util/include/debug_lock_audit.h) instead of a
+    // plain std::mutex: stop_all_workers() destroys workers/engine (each
+    // joining a std::thread) only after releasing this lock, and
+    // assert_no_tracked_locks_held() is called right before those joins to
+    // catch any future regression back to a join-while-locked pattern in
+    // debug builds. Behaves identically to std::mutex for every existing
+    // std::lock_guard/std::unique_lock call site; compiles down to a plain
+    // std::mutex in release (NDEBUG) builds with no tracking overhead.
+    nexusminer::util::Debug_tracked_mutex m_worker_mutex;
 
     // Per-epoch idempotency key: set after create_workers() succeeds in the
     // degraded-mode guard; checked before every subsequent creation attempt.
