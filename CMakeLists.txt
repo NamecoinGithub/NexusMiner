@@ -225,7 +225,8 @@ set(MAIN_SOURCE_FILES src/main.cpp
                 src/worker_manager.cpp 
                 src/timer_manager.cpp
                 src/dual_connection_manager.cpp
-                src/colin_agent.cpp)
+                src/colin_agent.cpp
+                src/liveness_watchdog.cpp)
 
 add_executable(NexusMiner ${MAIN_SOURCE_FILES})
 if (WITH_GPU_AMD AND WITH_PRIME)
@@ -270,6 +271,13 @@ add_nexusminer_test(
     NAME        dual_connection_manager_test
     SOURCES     src/dual_connection_manager_test.cpp src/dual_connection_manager.cpp
     LINK_LIBS   # (none required — header-only)
+)
+
+# Liveness watchdog (independent io_context stall detector) unit test
+add_nexusminer_test(
+    NAME        liveness_watchdog_test
+    SOURCES     src/liveness_watchdog_test.cpp src/liveness_watchdog.cpp
+    LINK_LIBS   chrono asio spdlog::spdlog Threads::Threads
 )
 
 # ============================================================================

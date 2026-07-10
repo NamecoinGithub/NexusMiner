@@ -41,6 +41,12 @@ namespace nexusminer
 		{
 			if (ec) return;
 			m_logger->info("Shutting down NexusMiner (signal={})", signal_number);
+			// Stop the watchdog first so a deliberate, graceful shutdown is
+			// never mistaken for an io_context stall while we tear down.
+			if (m_liveness_watchdog)
+			{
+				m_liveness_watchdog->stop();
+			}
 			// Stop the io_context FIRST so Miner::run()'s io_context->run() returns
 			// immediately, no matter what recovery/re-auth/reconnect state the
 			// Worker_manager is currently in (e.g. mid SESSION_RECOVERY, awaiting a
@@ -60,6 +66,10 @@ namespace nexusminer
 
 	Miner::~Miner()
 	{
+		if (m_liveness_watchdog)
+		{
+			m_liveness_watchdog->stop();
+		}
 		m_io_context->stop();
 	}
 
@@ -107,6 +117,12 @@ namespace nexusminer
 
 		// timer initialisation
 		chrono::Timer_factory::Sptr timer_factory = std::make_shared<chrono::Timer_factory>(m_io_context);
+
+		// Independent liveness watchdog for the shared io_context thread (see
+		// liveness_watchdog.hpp). Uses its own dedicated timer so a stall
+		// elsewhere on the io_context cannot be masked by shared timer state.
+		m_liveness_watchdog = std::make_unique<LivenessWatchdog>(
+			std::make_shared<chrono::Timer_factory>(m_io_context), m_logger);
 
 		// network initialisation
 		m_logger->debug("Initializing network component");
@@ -172,6 +188,11 @@ namespace nexusminer
 		else
 		{
 			m_logger->info("[SIM Link] DISABLED (single lane-scoped node session)");
+		}
+
+		if (m_liveness_watchdog)
+		{
+			m_liveness_watchdog->start();
 		}
 
 		m_io_context->run();

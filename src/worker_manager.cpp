@@ -681,9 +681,28 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                     // activity.  Full worker stops remain reserved for session
                     // recovery, transport reconnect, degraded mode, and true
                     // template distribution failures.
-                    
-                    // Request fresh work/GET_BLOCK
-                    mark_recovery_initiated("template_validation_failed");
+                    //
+                    // Route through the SAME soft-vs-hard policy the
+                    // recovery_initiated_handler already uses
+                    // (protocol::should_initiate_recovery_epoch), instead of
+                    // unconditionally bumping the recovery epoch here.  A
+                    // known, immediately-retriable template-local rejection
+                    // (e.g. PRIME_ORIGIN_TOO_LOW — ~1/256 of Prime templates,
+                    // see HasSufficientPrimeOrigins) does not need a
+                    // RecoveryPhase transition, a degraded_since timestamp, or
+                    // a degraded-mode stats flip: it self-heals with a single
+                    // GET_BLOCK retry.  Reasons the shared policy actually
+                    // classifies as recovery-worthy still escalate normally.
+                    // (This mirrors RecoveryHandlerHarness::invoke() in
+                    // get_block_dedup_recovery_test.cpp, which already
+                    // asserted this exact routing.)
+                    if (protocol::should_initiate_recovery_epoch(result.retry_reason)) {
+                        mark_recovery_initiated(protocol::reason_name(result.retry_reason));
+                    } else {
+                        m_logger->debug("[Worker_manager] Validation failure with soft reason {} — "
+                                        "issuing GET_BLOCK retry without epoch transition",
+                                        protocol::reason_name(result.retry_reason));
+                    }
                     retry_template_request(result.retry_reason);
                 }
             );

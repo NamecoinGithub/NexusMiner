@@ -226,6 +226,25 @@ connection and is never modified by any recovery or failover operation.
 This eliminates the former SIM-Link cross-lane bypass pattern where a stateless lane
 failure could route recovery through the legacy lane and vice versa.
 
+## Recovery-Epoch Gating Is Lane-Agnostic
+
+There is exactly **one** mining engine (`Worker_manager`) and exactly **one**
+`protocol::Solo` / `MiningTemplateInterface` implementation — there is no
+`SoloLegacy`/`SoloStateless` split. `ProtocolLane` only tells the packet
+serialization layer which opcode width and framing to use on the wire; it has
+no bearing on template validation, recovery, or degraded-mode logic.
+
+Consequently, the soft-vs-hard recovery policy in `Worker_manager` — gating
+`mark_recovery_initiated()` behind `protocol::should_initiate_recovery_epoch()`
+in both the template-validation-failure handler and the recovery-initiated
+handler (`src/worker_manager.cpp`) — runs identically regardless of which lane
+(Legacy port 8323 or Stateless port 9323) the active `NodeSession` is bound
+to. A known, immediately-retriable template-local rejection (e.g.
+`PRIME_ORIGIN_TOO_LOW`) is retried with a single `GET_BLOCK` and never
+triggers an unnecessary `RecoveryPhase` transition or degraded-mode stats
+flip, on either lane. There is no separate "Stateless Miner" code path that
+would need this fix applied independently.
+
 ## Related: Mining Tip Anchoring
 
 Push notifications (`PRIME_BLOCK_AVAILABLE` / `HASH_BLOCK_AVAILABLE`) are sent on
