@@ -227,7 +227,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
 
                 std::size_t worker_count = 0;
                 {
-                    std::lock_guard<std::mutex> lock(m_worker_mutex);
+                    std::lock_guard lock(m_worker_mutex);
                     worker_count = m_workers.size();
                 }
                 m_logger->info("[Worker_manager] ═══════════════════════════════════════");
@@ -268,7 +268,7 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 std::shared_ptr<WorkPackage> work_package;
                 std::shared_ptr<WorkerTemplateFeed> feed_snapshot;
                 {
-                    std::lock_guard<std::mutex> lock(m_worker_mutex);
+                    std::lock_guard lock(m_worker_mutex);
                     if (is_recovery_active() && !m_recovery_workers_spawned && m_workers.empty()) {
                         m_logger->info("[Worker_manager] Recovery mode: restarting workers before feeding recovery template");
                         create_workers_locked();
@@ -1300,7 +1300,7 @@ void Worker_manager::create_workers_locked()
 
 void Worker_manager::create_workers()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    std::lock_guard lock(m_worker_mutex);
     create_workers_locked();
 }
 
@@ -1320,15 +1320,23 @@ void Worker_manager::stop()
     }
 
     // Destroy workers before tearing down protocol/session state so no worker can
-    // race a late submit/request against a closing NodeSession.
+    // race a late submit/request against a closing NodeSession.  stop_all_workers()
+    // above already moved out and joined every worker, so m_workers is normally
+    // already empty here; snapshot-then-release (rather than resetting under the
+    // lock) keeps this defensive pass consistent with stop_all_workers()'s
+    // no-join-while-locked invariant in case that ever changes.
+    std::vector<std::shared_ptr<Worker>> stragglers;
     {
-        std::lock_guard<std::mutex> lock(m_worker_mutex);
-        for (auto& worker : m_workers)
-        {
-            worker.reset();
-        }
+        std::lock_guard lock(m_worker_mutex);
+        stragglers = std::move(m_workers);
         m_workers.clear();
     }
+    nexusminer::util::assert_no_tracked_locks_held("Worker_manager::stop (straggler worker teardown)");
+    for (auto& worker : stragglers)
+    {
+        worker.reset();
+    }
+    stragglers.clear();
 
     if (m_primary_node_session) {
         m_primary_node_session->stop();
@@ -1337,7 +1345,7 @@ void Worker_manager::stop()
 
 void Worker_manager::collect_worker_statistics()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    std::lock_guard lock(m_worker_mutex);
     for (auto& worker : m_workers) {
         if (worker) {
             worker->update_statistics(*m_stats_collector);
@@ -2657,17 +2665,71 @@ void Worker_manager::clear_recovery_state()
 
 void Worker_manager::stop_all_workers()
 {
-    std::lock_guard<std::mutex> lock(m_worker_mutex);
+    // ── Lock-scope discipline ──────────────────────────────────────────────
+    // Destroying a Worker (shared_ptr reset) joins its mining thread in the
+    // destructor; destroying the PrimeMiningEngine joins its pool/consumer/
+    // stats threads.  Doing either of those while still holding
+    // m_worker_mutex would mean the io_context thread (which calls
+    // stop_all_workers() synchronously from several recovery/shutdown paths)
+    // blocks on a join *while holding the lock* — any other code path that
+    // ever needs m_worker_mutex from inside one of those joined threads
+    // (directly, or transitively) would deadlock permanently.  No such path
+    // exists today, but nothing enforces that invariant either, and it is
+    // exactly the "silent freeze" failure mode this function must never
+    // become an instance of.
+    //
+    // The fix: snapshot every shared_ptr/vector that teardown needs into
+    // locals while the lock is held, release the lock, then destroy/join the
+    // locals with no lock held at all.  This mirrors the "Stone 4" pattern
+    // already used by the template-distribution fan-out below (see its
+    // comment: "m_worker_mutex released here").
+    std::shared_ptr<WorkerTemplateFeed> feed_to_teardown;
+    std::vector<std::shared_ptr<Worker>> workers_to_teardown;
+#ifdef PRIME_ENABLED
+    std::shared_ptr<cpu::PrimeMiningEngine> engine_to_teardown;
+#endif
+    bool truly_degraded = false;
+    bool auto_recoverable = false;
+    bool session_active = false;
 
-    // Header wording depends on WHY workers are being stopped: a normal
-    // self-healing recovery pause (WAITING_TEMPLATE / SESSION_RECOVERY /
-    // RECONNECTING — workers resume automatically once a fresh template/
-    // session arrives) reads very differently from a full-stop degraded phase
-    // (either operator/signal-terminal, or auto-recoverable via the watchdog).
-    // Conflating the two in logs is what previously made a normal, ~35s
-    // reorg-storm recovery look like a permanent failure.
-    const bool auto_recoverable = is_degraded_recoverable();
-    const bool truly_degraded = is_degraded_terminal() || auto_recoverable;
+    {
+        std::lock_guard lock(m_worker_mutex);
+
+        // Header wording depends on WHY workers are being stopped: a normal
+        // self-healing recovery pause (WAITING_TEMPLATE / SESSION_RECOVERY /
+        // RECONNECTING — workers resume automatically once a fresh template/
+        // session arrives) reads very differently from a full-stop degraded phase
+        // (either operator/signal-terminal, or auto-recoverable via the watchdog).
+        // Conflating the two in logs is what previously made a normal, ~35s
+        // reorg-storm recovery look like a permanent failure.
+        auto_recoverable = is_degraded_recoverable();
+        truly_degraded = is_degraded_terminal() || auto_recoverable;
+
+        // Snapshot (move) the teardown targets out of member state.  From
+        // this point on, any concurrent reader of m_workers/m_prime_engine/
+        // m_template_feed (e.g. create_workers(), collect_worker_statistics(),
+        // the template-distribution fan-out) observes the post-teardown empty
+        // state immediately — there is no window where the members are
+        // non-empty but their underlying threads are already being joined.
+        workers_to_teardown = std::move(m_workers);
+        m_workers.clear();
+#ifdef PRIME_ENABLED
+        engine_to_teardown = std::move(m_prime_engine);
+#endif
+        feed_to_teardown = std::move(m_template_feed);
+
+        // Clear the recovery gate so the next epoch can re-create workers
+        m_recovery_workers_spawned = false;
+    }  // ── m_worker_mutex released here ────────────────────────────────────
+
+    // Regression guard: from here to the end of this function we are about
+    // to join threads (PrimeMiningEngine's pool/consumer/stats threads, and
+    // each Worker's mining thread).  Assert (debug builds only) that
+    // m_worker_mutex is not held on this thread — see
+    // Util/include/debug_lock_audit.h for why this specific invariant
+    // matters.
+    nexusminer::util::assert_no_tracked_locks_held("Worker_manager::stop_all_workers (before join teardown)");
+
     const char* banner = truly_degraded
         ? (auto_recoverable ? "STOPPING ALL WORKERS (DEGRADED MODE — auto-recoverable, watchdog active)"
                              : "STOPPING ALL WORKERS (DEGRADED MODE — terminal, operator action required)")
@@ -2677,7 +2739,6 @@ void Worker_manager::stop_all_workers()
     m_logger->warn("[Worker_manager] ⚠️  {}", banner);
     m_logger->warn("[Worker_manager] ════════════════════════════════════════");
 
-    bool session_active = false;
     if (auto solo_protocol = m_primary_node_session ? m_primary_node_session->get_primary_protocol() : nullptr) {
         if (auto* session_manager = solo_protocol->get_session_manager()) {
             const auto binding = session_manager->get_session_binding();
@@ -2692,10 +2753,12 @@ void Worker_manager::stop_all_workers()
     // so it can observe its own m_shutdown / m_stop flag and exit cleanly before
     // its destructor joins the mining thread below.  We notify *before* resetting
     // the workers (the destructors below set those flags and join), but the feed
-    // shared_ptr is kept alive by both us and each worker, so the wake call is
-    // safe even if a worker has already begun teardown on another thread.
-    if (m_template_feed) {
-        m_template_feed->notify_wake();
+    // shared_ptr is kept alive locally, so the wake call is safe even if a
+    // worker has already begun teardown on another thread.  No lock is held
+    // here or below — every remaining step in this function only touches the
+    // local snapshots taken above.
+    if (feed_to_teardown) {
+        feed_to_teardown->notify_wake();
     }
 
 #ifdef PRIME_ENABLED
@@ -2712,20 +2775,21 @@ void Worker_manager::stop_all_workers()
     //
     // Engine destructor sets shutdown, wakes pool CV, joins pool threads
     // (Stone 6 ordering), then joins consumer.  No work for us beyond this
-    // shared_ptr reset.
-    if (m_prime_engine) {
+    // shared_ptr reset.  This join happens with NO lock held (see above).
+    if (engine_to_teardown) {
         m_logger->info("[Worker_manager] Tearing down PrimeMiningEngine");
-        m_prime_engine.reset();
+        engine_to_teardown.reset();
     }
 #endif
 
     // Reset all worker instances so that the next create_workers() call starts fresh
     // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
     // object (and joins its mining thread in the destructor), effectively stopping it.
-    for (auto& worker : m_workers) {
+    // This join happens with NO lock held (see above).
+    for (auto& worker : workers_to_teardown) {
         worker.reset();
     }
-    m_workers.clear();
+    workers_to_teardown.clear();
 
     // Stone 4: now that every worker has been destroyed (and joined its mining
     // thread), it is safe to release the feed.  A fresh feed will be created on
@@ -2733,10 +2797,7 @@ void Worker_manager::stop_all_workers()
     // epoch_id 1 rather than inheriting a stale epoch counter from the prior
     // generation (workers compare the loaded epoch_id against their last-seen
     // value, and a fresh feed gives them a clean baseline).
-    m_template_feed.reset();
-
-    // Clear the recovery gate so the next epoch can re-create workers
-    m_recovery_workers_spawned = false;
+    feed_to_teardown.reset();
 
     if (truly_degraded) {
         if (auto_recoverable) {
