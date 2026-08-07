@@ -954,9 +954,13 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* Called by Solo when SESSION_START is received and keepalive interval has been  */
         /* auto-adjusted from the node-advertised timeout. Updates m_node_keepalive_interval_hours */
         /* so future secondary/failover connections use the correct node-derived interval. */
+        // Handlers registered here must not capture weak_from_this()/shared_from_this()
+        // at construction time: enable_shared_from_this is not yet wired when
+        // Worker_manager is created via std::make_shared. Capture `this` and
+        // obtain weak_from_this() only when the callback runs (post-construction).
         m_primary_node_session->set_session_start_handler(
-            [weak_self = weak_from_this()](uint16_t keepalive_hours) {
-                auto self = weak_self.lock();
+            [this](uint16_t keepalive_hours) {
+                auto self = weak_from_this().lock();
                 if (!self) return;
                 self->m_node_keepalive_interval_hours.store(keepalive_hours);
                 self->m_logger->info("[Worker_manager] Node-advertised keepalive interval: {} hours (will seed future connections)",
@@ -968,8 +972,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         /* ========== REGISTER BLOCK ACCEPTED HANDLER ========== */
         /* Records accepted blocks into the three-tier mined-block cache. */
         m_primary_node_session->set_block_accepted_handler(
-            [weak_self = weak_from_this()](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
-                auto self = weak_self.lock();
+            [this](uint32_t height, uint1024_t hash_prev_block, uint32_t channel, uint64_t nonce) {
+                auto self = weak_from_this().lock();
                 if (!self) return;
                 self->m_mined_block_cache.record_accepted_block(height, hash_prev_block, channel, nonce);
                 self->m_logger->info("[Worker_manager] ⛏ Block recorded in mined-block cache — height={} ch={} total={}",
@@ -984,8 +988,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         // own reconnect backoff (NODE_SHUTDOWN_BACKOFF_S); we just need to park
         // the workers so they don't churn on stale work.
         m_primary_node_session->set_node_shutdown_handler(
-            [self = weak_from_this()](uint8_t reason) {
-                auto mgr = self.lock();
+            [this](uint8_t reason) {
+                auto mgr = weak_from_this().lock();
                 if (!mgr) return;
                 mgr->handle_node_shutdown(reason);
             }
@@ -999,8 +1003,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
         // template-health poll cycle. See check_template_health()'s
         // replacement-pending safety net for the actual expiry handling.
         m_primary_node_session->set_replacement_pending_handler(
-            [self = weak_from_this()](std::chrono::steady_clock::time_point deadline) {
-                auto mgr = self.lock();
+            [this](std::chrono::steady_clock::time_point deadline) {
+                auto mgr = weak_from_this().lock();
                 if (!mgr) return;
                 auto now = std::chrono::steady_clock::now();
                 auto delay = std::max(
