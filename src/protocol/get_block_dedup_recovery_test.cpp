@@ -955,16 +955,21 @@ void test_recovery_handler_reason_routing() {
     print_test_result("VALIDATION_FAILURE still retries GET_BLOCK once",
         soft_validation.retry_calls == 1);
 
+    // PRIME_ORIGIN_TOO_LOW is covered here as a soft reason under the shared
+    // should_initiate_recovery_epoch() soft/hard routing policy used by the
+    // recovery/validation handlers (RecoveryHandlerHarness::invoke mirrors
+    // that policy). This is not a full Worker_manager validation_failure_handler
+    // integration test — it asserts the routing decision and side effects only.
     RecoveryHandlerHarness soft_prime_origin;
     bool soft_prime_origin_sent = soft_prime_origin.invoke(GetBlockReason::PRIME_ORIGIN_TOO_LOW);
-    print_test_result("PRIME_ORIGIN_TOO_LOW remains a soft template-hygiene retry", soft_prime_origin_sent);
-    print_test_result("PRIME_ORIGIN_TOO_LOW does not mark recovery initiated",
+    print_test_result("PRIME_ORIGIN_TOO_LOW soft/hard routing: remains a soft retry", soft_prime_origin_sent);
+    print_test_result("PRIME_ORIGIN_TOO_LOW soft/hard routing: does not mark recovery initiated",
         soft_prime_origin.mark_calls == 0);
-    print_test_result("PRIME_ORIGIN_TOO_LOW leaves phase HEALTHY",
+    print_test_result("PRIME_ORIGIN_TOO_LOW soft/hard routing: leaves phase HEALTHY",
         soft_prime_origin.phase == RecoveryHandlerHarness::Phase::HEALTHY);
-    print_test_result("PRIME_ORIGIN_TOO_LOW leaves recovery epoch unchanged",
+    print_test_result("PRIME_ORIGIN_TOO_LOW soft/hard routing: leaves recovery epoch unchanged",
         soft_prime_origin.recovery_epoch == 0);
-    print_test_result("PRIME_ORIGIN_TOO_LOW still retries GET_BLOCK once",
+    print_test_result("PRIME_ORIGIN_TOO_LOW soft/hard routing: still retries GET_BLOCK once",
         soft_prime_origin.retry_calls == 1);
 
     RecoveryHandlerHarness hard_forced;

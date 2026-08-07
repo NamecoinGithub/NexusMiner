@@ -262,6 +262,11 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 // actually starts mining threads; without this the template is
                 // silently dropped and workers_fed falsely reads 0 keeping the
                 // miner in a doom loop.
+                //
+                // Exclude full-stop degraded phases (DEGRADED_TERMINAL /
+                // DEGRADED_RECOVERABLE): mining is intentionally halted there
+                // (stop_all_workers banner/logs), and a late/in-flight template
+                // must not recreate workers and resume mining unexpectedly.
                 size_t workers_fed = 0;
                 size_t total_worker_count = 0;
                 std::vector<std::shared_ptr<Worker>> worker_snapshot;
@@ -269,7 +274,8 @@ Worker_manager::Worker_manager(std::shared_ptr<asio::io_context> io_context, Con
                 std::shared_ptr<WorkerTemplateFeed> feed_snapshot;
                 {
                     std::lock_guard lock(m_worker_mutex);
-                    if (is_recovery_active() && !m_recovery_workers_spawned && m_workers.empty()) {
+                    if (is_recovery_active() && !is_degraded_any() &&
+                        !m_recovery_workers_spawned && m_workers.empty()) {
                         m_logger->info("[Worker_manager] Recovery mode: restarting workers before feeding recovery template");
                         create_workers_locked();
                         m_recovery_workers_spawned = !m_workers.empty();  // set AFTER success for exception safety
