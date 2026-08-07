@@ -84,6 +84,8 @@ public:
 
     void unlock()
     {
+        assert(detail::tracked_lock_depth() > 0 &&
+               "Debug_tracked_mutex::unlock() called without a matching lock");
         --detail::tracked_lock_depth();
         m_mutex.unlock();
     }

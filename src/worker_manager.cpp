@@ -2777,6 +2777,11 @@ void Worker_manager::stop_all_workers()
     // (Stone 6 ordering), then joins consumer.  No work for us beyond this
     // shared_ptr reset.  This join happens with NO lock held (see above).
     if (engine_to_teardown) {
+        // Re-check immediately before the join-capable teardown step so a future
+        // edit that re-acquires a tracked lock between the earlier assertion and
+        // this point is still caught at the actual join site.
+        nexusminer::util::assert_no_tracked_locks_held(
+            "Worker_manager::stop_all_workers (before PrimeMiningEngine teardown)");
         m_logger->info("[Worker_manager] Tearing down PrimeMiningEngine");
         engine_to_teardown.reset();
     }
@@ -2786,6 +2791,11 @@ void Worker_manager::stop_all_workers()
     // without duplicating existing workers.  The shared_ptr reset() destroys the Worker
     // object (and joins its mining thread in the destructor), effectively stopping it.
     // This join happens with NO lock held (see above).
+    // Re-check immediately before the join-capable worker destructor loop so a
+    // future edit that re-acquires a tracked lock before this point is still
+    // caught at the actual join site.
+    nexusminer::util::assert_no_tracked_locks_held(
+        "Worker_manager::stop_all_workers (before worker teardown)");
     for (auto& worker : workers_to_teardown) {
         worker.reset();
     }
