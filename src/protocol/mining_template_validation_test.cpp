@@ -126,7 +126,7 @@ std::vector<uint8_t> create_mock_stateless_payload(uint32_t metadata_unified_hei
                                                    uint8_t channel = 2) {
     auto body = create_mock_template(metadata_unified_height + 1, nBits, channel);
     std::vector<uint8_t> payload;
-    payload.reserve(12 + body.size());
+    payload.reserve(TRITIUM_METADATA_PREFIX_SIZE + body.size());
 
     auto write_u32_be = [&](uint32_t value) {
         payload.push_back((value >> 24) & 0xFF);
@@ -1058,6 +1058,8 @@ int main()
         auto res_bad = tmpl_interface.read_stateless_payload(bad_payload, "test_node");
         print_test_result("25c: Provisional recovery rejects metadata/body height mismatch",
             !res_bad.is_valid && !res_bad.height_valid);
+        print_test_result("25c: Rejection path initializes validation_time to 0us",
+            res_bad.validation_time.count() == 0);
         print_test_result("25c: Rejected provisional payload does not install a template",
             !tmpl_interface.has_valid_template());
 

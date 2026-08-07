@@ -750,7 +750,6 @@ private:
     bool m_recovery_template_pending{false};
     bool m_has_provisional_recovery_template{false};
     uint32_t m_provisional_recovery_unified_height{0};
-    uint1024_t m_provisional_recovery_prev_hash{0};
     std::chrono::steady_clock::time_point m_template_received_time;  // Track template age
     
     MiningTemplate m_current_template;
