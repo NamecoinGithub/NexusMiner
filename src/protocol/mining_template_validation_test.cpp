@@ -1459,15 +1459,19 @@ int main()
             }
         }
 
-        MiningTemplateInterface tmpl_interface(1, 0);
-        auto res = tmpl_interface.read_template(data, "test_node", false);
-
         print_test_result("Test 37: fixture found a low-prime-origin template", found_low_origin);
-        print_test_result("Test 37: validation rejects PRIME_ORIGIN_TOO_LOW", !res.is_valid);
-        print_test_result("Test 37: retry reason is PRIME_ORIGIN_TOO_LOW",
-            res.retry_reason == GetBlockReason::PRIME_ORIGIN_TOO_LOW);
-        print_test_result("Test 37: current template was never marked valid",
-            !tmpl_interface.has_valid_template());
+        // Only exercise rejection assertions when the fixture search succeeded.
+        // A failed search should produce a single clear failure rather than a cascade.
+        if (found_low_origin) {
+            MiningTemplateInterface tmpl_interface(1, 0);
+            auto res = tmpl_interface.read_template(data, "test_node", false);
+
+            print_test_result("Test 37: validation rejects PRIME_ORIGIN_TOO_LOW", !res.is_valid);
+            print_test_result("Test 37: retry reason is PRIME_ORIGIN_TOO_LOW",
+                res.retry_reason == GetBlockReason::PRIME_ORIGIN_TOO_LOW);
+            print_test_result("Test 37: current template was never marked valid",
+                !tmpl_interface.has_valid_template());
+        }
     }
 
     // ====================================================================
