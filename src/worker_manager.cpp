@@ -3135,7 +3135,12 @@ void Worker_manager::check_template_health()
         // duration, push silence, and lane-alive silence so a connectivity blip that
         // started before (or outlasts) the current WAITING_TEMPLATE epoch cannot be
         // masked by a template-only clock that looks "recent enough" in isolation.
-        int64_t worst_case_secs = compute_worst_case_outage_seconds(degraded_secs, since_push_s);
+        // When no push has ever been received, since_push_s is INT64_MAX (sentinel for
+        // logging/resubscribe). Do not feed that sentinel into the aggregator — it would
+        // make worst_case_secs trip the hard-stop immediately on first WAITING_TEMPLATE.
+        // Pass 0 so the hard-stop is driven only by real elapsed outage signals.
+        int64_t worst_case_secs = compute_worst_case_outage_seconds(
+            degraded_secs, push_received ? since_push_s : 0);
 
         m_logger->info("[Worker_manager] WAITING_TEMPLATE: {}s elapsed, push {}s ago (recent={}), "
                        "worst_case_outage={}s",
