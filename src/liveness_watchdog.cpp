@@ -1,5 +1,6 @@
 #include "liveness_watchdog.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace nexusminer

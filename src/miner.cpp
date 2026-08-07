@@ -122,7 +122,7 @@ namespace nexusminer
 		// liveness_watchdog.hpp). Uses its own dedicated timer so a stall
 		// elsewhere on the io_context cannot be masked by shared timer state.
 		m_liveness_watchdog = std::make_unique<LivenessWatchdog>(
-			std::make_shared<chrono::Timer_factory>(m_io_context), m_logger);
+			timer_factory, m_logger);
 
 		// network initialisation
 		m_logger->debug("Initializing network component");

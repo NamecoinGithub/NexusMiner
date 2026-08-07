@@ -19,6 +19,7 @@
 #include <thread>
 
 #ifndef _WIN32
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -133,17 +134,26 @@ void test_wedged_io_context_triggers_forced_exit()
     // ── Parent process ── wait for the child, bounded so the test itself
     // cannot hang if something regresses.
     int status = 0;
+    bool reaped = false;
     for (int i = 0; i < 100; ++i) {  // up to ~10s
         pid_t result = waitpid(pid, &status, WNOHANG);
         if (result == pid) {
+            reaped = true;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
 
+    if (!reaped) {
+        // Child never exited within the bounded wait — terminate and reap it
+        // so the test suite cannot leak a wedged process.
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+    }
+
     bool exited = WIFEXITED(status);
     int exit_code = exited ? WEXITSTATUS(status) : -1;
-    expect(exited && exit_code == 42,
+    expect(reaped && exited && exit_code == 42,
            "wedged io_context causes LivenessWatchdog to force-exit the process with code 42");
 }
 #endif
