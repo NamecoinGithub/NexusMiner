@@ -156,7 +156,10 @@ private:
     /// Returns the MAX of three independently-tracked staleness signals:
     ///   - degraded_secs:    seconds since the current WAITING_TEMPLATE/no-valid-
     ///                       template outage began (m_recovery.degraded_since)
-    ///   - since_push_s:     seconds since the last push notification was received
+    ///   - since_push_s:     seconds since the last push notification was received;
+    ///                       pass 0 when no push has ever been received (do not
+    ///                       pass an INT64_MAX "never" sentinel — that would trip
+    ///                       hard-stop escalation immediately)
     ///   - lane-alive age:   seconds since DualConnectionManager last confirmed at
     ///                       least one lane alive (m_sim_link.last_alive_at())
     ///
