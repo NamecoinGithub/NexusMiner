@@ -228,7 +228,6 @@ MiningTemplateInterface::read_template(const network::Payload& data,
             if (m_recovery_template_pending && m_last_unified_height == 0) {
                 m_has_provisional_recovery_template = true;
                 m_provisional_recovery_unified_height = tmpl.block.nHeight;
-                m_provisional_recovery_prev_hash = tmpl.block.hashPrevBlock;
                 m_logger->warn("[TemplateInterface] Provisional recovery template accepted: "
                                "height={} prev_hash={}... — awaiting channel-height finalization "
                                "or canonical prev-hash confirmation before continuity promotion",
@@ -243,7 +242,6 @@ MiningTemplateInterface::read_template(const network::Payload& data,
                 m_recovery_template_pending = false;
                 m_has_provisional_recovery_template = false;
                 m_provisional_recovery_unified_height = 0;
-                m_provisional_recovery_prev_hash = {};
             }
             
             // Update template received time for age monitoring
@@ -388,6 +386,7 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
                 result.height_valid = height_consistent && channel_sane;
                 result.bits_valid = nbits_consistent;
                 result.channel_valid = true;
+                result.validation_time = std::chrono::microseconds{0};
                 result.error_message = "Provisional recovery template metadata/body mismatch";
                 if (!metadata_height_has_next) {
                     result.error_message += ": metadata.unified_height is UINT32_MAX";
@@ -427,6 +426,7 @@ MiningTemplateInterface::read_stateless_payload(const network::Payload& payload2
             result.height_valid = false;
             result.bits_valid = false;
             result.channel_valid = false;
+            result.validation_time = std::chrono::microseconds{0};
             result.error_message = std::string("Failed to parse provisional recovery template body: ") + e.what();
             m_templates_rejected.fetch_add(1, std::memory_order_relaxed);
             m_logger->critical("[TemplateInterface] 🚨 PROVISIONAL RECOVERY TEMPLATE rejected: {}", result.error_message);
@@ -1683,7 +1683,6 @@ void MiningTemplateInterface::promote_provisional_recovery_template_unsafe(const
     m_recovery_template_pending = false;
     m_has_provisional_recovery_template = false;
     m_provisional_recovery_unified_height = 0;
-    m_provisional_recovery_prev_hash = {};
 
     m_logger->info("[TemplateInterface] Provisional recovery template promoted after {}: "
                    "height={} is now the continuity baseline",
@@ -1736,7 +1735,6 @@ void MiningTemplateInterface::discard_template_unsafe(const std::string& reason)
     m_recovery_template_pending = true;
     m_has_provisional_recovery_template = false;
     m_provisional_recovery_unified_height = 0;
-    m_provisional_recovery_prev_hash = {};
     
     m_logger->info("[TemplateInterface] Discarding template: {}", reason);
     m_logger->info("[TemplateInterface]   - Height: {}", m_current_template.block.nHeight);
