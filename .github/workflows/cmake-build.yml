@@ -41,7 +41,7 @@ jobs:
             }
           - {
               name: "Windows MSVC",
-              os: windows-latest,
+              os: windows-2022,
               preset: "windows-msvc",
               cc: "cl",
               cxx: "cl"
