@@ -1,0 +1,213 @@
+name: Build 1.5.1 candidate artifacts
+
+on:
+  push:
+    branches: [build-1.5.1-candidate]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: a2898872b026e82d9a00c8facbaaba29f4a702ed
+
+jobs:
+  unix-cpu:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev
+          else
+            brew install ninja openssl@3 boost gmp
+          fi
+      - name: Configure and verify features
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_PRIME=ON -DNEXUSMINER_STATIC_OPENSSL=OFF 2>&1 | tee configure.log
+          grep -q 'PRIME big integer backend:' configure.log
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build/candidate --parallel 2
+          build/candidate/NexusMiner --version | grep -Fx 'NexusMiner version: 1.5.1'
+          ctest --test-dir build/candidate --output-on-failure --timeout 120
+      - name: Package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          name="NexusMiner-1.5.1-${{ matrix.platform }}-cpu-prime"
+          mkdir -p "dist/$name"
+          cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
+          cp -R configs "dist/$name/"
+          printf '%s\n' "$SOURCE_SHA" > "dist/$name/SOURCE_COMMIT.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows-cpu:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:GITHUB_WORKSPACE\vcpkg"
+          & "$env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:GITHUB_WORKSPACE\vcpkg\vcpkg.exe" install --triplet x64-windows openssl gmp boost-integer boost-multiprecision
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure and verify features
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --preset windows-msvc "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_PRIME=ON -DNEXUSMINER_STATIC_OPENSSL=OFF "-DGMP_INCLUDES=$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/include" "-DGMP_LIBRARIES=$env:GITHUB_WORKSPACE/vcpkg/installed/x64-windows/lib/gmp.lib" 2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Quiet -Path configure.log -Pattern 'PRIME big integer backend:')) { throw 'Prime support is missing' }
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build --preset windows-msvc --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH = "$env:GITHUB_WORKSPACE\vcpkg\installed\x64-windows\bin;$env:PATH"
+          $version = & build/windows-msvc/Release/NexusMiner.exe --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'NexusMiner version: 1.5.1') { throw "Unexpected version: $version" }
+          ctest --test-dir build/windows-msvc -C Release --output-on-failure --timeout 120
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'NexusMiner-1.5.1-windows-x86_64-cpu-prime'
+          New-Item -ItemType Directory -Force "dist\$name" | Out-Null
+          Copy-Item build/windows-msvc/Release/NexusMiner.exe, README.md, BUILD.md, COPYING, example.miner.config "dist\$name"
+          Copy-Item configs "dist\$name\configs" -Recurse
+          Copy-Item vcpkg/installed/x64-windows/bin/*.dll "dist\$name"
+          $env:SOURCE_SHA | Set-Content -Encoding ascii "dist\$name\SOURCE_COMMIT.txt"
+          Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-windows-x86_64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux-cuda:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Install CUDA toolkit and dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev cuda-nvcc-12-4 cuda-cudart-dev-12-4
+      - name: Configure and verify features
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_PRIME=ON -DWITH_GPU_CUDA=ON -DNEXUSMINER_STATIC_OPENSSL=OFF \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
+            -DCMAKE_CUDA_ARCHITECTURES=75 2>&1 | tee configure.log
+          grep -q 'PRIME big integer backend:' configure.log
+          grep -q 'CUDA compiler identification is NVIDIA' configure.log
+      - name: Build and smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build/candidate --parallel 2
+          build/candidate/NexusMiner --version | grep -Fx 'NexusMiner version: 1.5.1'
+          ctest --test-dir build/candidate --output-on-failure --timeout 120
+      - name: Package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          name=NexusMiner-1.5.1-linux-x86_64-nvidia-cuda-prime
+          mkdir -p "dist/$name"
+          cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
+          cp -R configs "dist/$name/"
+          printf '%s\n' "$SOURCE_SHA" > "dist/$name/SOURCE_COMMIT.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-linux-nvidia
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  linux-amd:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:6.2.4
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apt-get update -qq
+          apt-get install -y cmake ninja-build git libssl-dev libboost-dev libgmp-dev
+      - name: Configure and verify features
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_CXX_FLAGS=--offload-arch=gfx1030 \
+            -DWITH_PRIME=ON -DWITH_GPU_AMD=ON -DNEXUSMINER_STATIC_OPENSSL=OFF 2>&1 | tee configure.log
+          grep -q 'PRIME big integer backend:' configure.log
+      - name: Build and smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build/candidate --parallel 2
+          build/candidate/NexusMiner --version | grep -Fx 'NexusMiner version: 1.5.1'
+          ctest --test-dir build/candidate --output-on-failure --timeout 120
+      - name: Package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          name=NexusMiner-1.5.1-linux-x86_64-amd-gfx1030-prime
+          mkdir -p "dist/$name"
+          cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
+          cp -R configs "dist/$name/"
+          printf '%s\n' "$SOURCE_SHA" > "dist/$name/SOURCE_COMMIT.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-linux-amd-gfx1030
+          path: dist/*.tar.gz
+          if-no-files-found: error
