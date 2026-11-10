@@ -137,12 +137,11 @@ jobs:
         run: |
           set -euxo pipefail
           cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DWITH_PRIME=ON -DWITH_GPU_CUDA=ON -DNEXUSMINER_STATIC_OPENSSL=OFF \
+            -DWITH_PRIME=OFF -DWITH_GPU_CUDA=ON -DNEXUSMINER_STATIC_OPENSSL=OFF \
             -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
             "-DCMAKE_CUDA_FLAGS=-I$GITHUB_WORKSPACE/src/gpu/src/gpu/cuda_prime" \
             "-DCMAKE_CXX_FLAGS=-I$GITHUB_WORKSPACE/src/gpu/src/gpu/cuda_prime" \
             -DCMAKE_CUDA_ARCHITECTURES=75 2>&1 | tee configure.log
-          grep -q 'PRIME big integer backend:' configure.log
           grep -q 'CUDA compiler identification is NVIDIA' configure.log
       - name: Build and smoke test
         shell: bash
@@ -155,7 +154,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          name=NexusMiner-1.5.1-linux-x86_64-nvidia-cuda-prime
+          name=NexusMiner-1.5.1-linux-x86_64-nvidia-cuda-hash-only
           mkdir -p "dist/$name"
           cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
           cp -R configs "dist/$name/"
