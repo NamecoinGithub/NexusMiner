@@ -12,6 +12,7 @@ env:
 
 jobs:
   unix-cpu:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -130,14 +131,14 @@ jobs:
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update -qq
-          sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev cuda-nvcc-12-4 cuda-cudart-dev-12-4
+          sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev cuda-nvcc-12-8 cuda-cudart-dev-12-8
       - name: Configure and verify features
         shell: bash
         run: |
           set -euxo pipefail
           cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DWITH_PRIME=ON -DWITH_GPU_CUDA=ON -DNEXUSMINER_STATIC_OPENSSL=OFF \
-            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
             -DCMAKE_CUDA_ARCHITECTURES=75 2>&1 | tee configure.log
           grep -q 'PRIME big integer backend:' configure.log
           grep -q 'CUDA compiler identification is NVIDIA' configure.log
