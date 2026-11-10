@@ -19,8 +19,15 @@ libstdc++ and OpenSSL 3 (`libcrypto.so.3`). CPU Prime also requires GMP
 (`libgmp.so.10`). They were built on Ubuntu 24.04. NVIDIA hash uses CUDA 12.8
 and requires a compatible NVIDIA driver and supported GPU; the compiled
 architectures are 61, 75, 80, 86, 89 and 90. The CUDA runtime is statically
-linked. Host tests and version checks passed, but no live mining was tested.
-Verify each archive with its accompanying `SHA256SUMS.txt`.
+linked. The NVIDIA hash build passed its host tests and version check, but no
+live mining was tested. Verify each archive with its accompanying
+`SHA256SUMS.txt`.
+
+The initial CPU Prime build passed 61 host tests. A subsequent build of the
+same source failed `worker_manager_startup_recovery_test` with an out-of-range
+exception and `prime_mining_engine_pool_test` on forced-candidate assertions.
+These failures have not been diagnosed, so CPU reliability should not be
+assumed from the earlier passing run.
 
 Extract the archive, choose and edit an appropriate file in `configs/`, and
 follow the included README and configuration guide. Keep Falcon private keys
