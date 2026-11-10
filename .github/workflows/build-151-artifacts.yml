@@ -16,12 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-          - os: macos-14
+          - os: macos-latest
             platform: macos-arm64
-          - os: macos-15-intel
-            platform: macos-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -69,6 +65,7 @@ jobs:
           if-no-files-found: error
 
   windows-cpu:
+    if: false
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -120,6 +117,7 @@ jobs:
           if-no-files-found: error
 
   linux-cuda:
+    if: false
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
@@ -168,6 +166,7 @@ jobs:
           if-no-files-found: error
 
   linux-amd:
+    if: false
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:6.2.4
     timeout-minutes: 90
