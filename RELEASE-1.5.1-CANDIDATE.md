@@ -1,9 +1,12 @@
 # NexusMiner 1.5.1 candidate
 
 These artifacts are built from `MINER` commit
-`a2898872b026e82d9a00c8facbaaba29f4a702ed`. The release is not published.
-Download the candidate artifacts from the Actions run associated with this
-branch. Each artifact includes its archive and a SHA-256 checksum.
+`a2898872b026e82d9a00c8facbaaba29f4a702ed`. The release is not published:
+this session was denied permission to create even a draft release.
+Download the candidate artifacts from
+[Actions run 42917659040](https://github.com/NamecoinGithub/NexusMiner/actions/runs/42917659040).
+The artifacts expire on February 8, 2027. Each includes its archive and a
+SHA-256 checksum.
 
 ## Linux x86-64
 
@@ -23,11 +26,11 @@ linked. The NVIDIA hash build passed its host tests and version check, but no
 live mining was tested. Verify each archive with its accompanying
 `SHA256SUMS.txt`.
 
-The initial CPU Prime build passed 61 host tests. A subsequent build of the
-same source failed `worker_manager_startup_recovery_test` with an out-of-range
-exception and `prime_mining_engine_pool_test` on forced-candidate assertions.
-These failures have not been diagnosed, so CPU reliability should not be
-assumed from the earlier passing run.
+The initial CPU Prime build and the retry passed 61 host tests. An intervening
+build of the same source failed `worker_manager_startup_recovery_test` with an
+out-of-range exception and `prime_mining_engine_pool_test` on forced-candidate
+assertions. These failures have not been diagnosed, so CPU reliability should
+not be assumed from the passing runs.
 
 Extract the archive, choose and edit an appropriate file in `configs/`, and
 follow the included README and configuration guide. Keep Falcon private keys
