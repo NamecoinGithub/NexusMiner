@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             platform: linux-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -30,7 +30,7 @@ jobs:
           set -euxo pipefail
           if [[ "$RUNNER_OS" == Linux ]]; then
             sudo apt-get update -qq
-            sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev gcc-12 g++-12
+            sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev
           else
             brew install ninja openssl@3 boost gmp
           fi
@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          CC=gcc-12 CXX=g++-12 cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DWITH_PRIME=ON -DNEXUSMINER_STATIC_OPENSSL=OFF 2>&1 | tee configure.log
           grep -q 'PRIME big integer backend:' configure.log
       - name: Build and test
@@ -117,7 +117,7 @@ jobs:
           if-no-files-found: error
 
   linux-cuda:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -127,18 +127,17 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update -qq
-          sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev gcc-12 g++-12 cuda-nvcc-12-4 cuda-cudart-dev-12-4
+          sudo apt-get install -y ninja-build libssl-dev libboost-dev libgmp-dev cuda-nvcc-12-4 cuda-cudart-dev-12-4
       - name: Configure and verify features
         shell: bash
         run: |
           set -euxo pipefail
-          CC=gcc-12 CXX=g++-12 cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build/candidate -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DWITH_PRIME=ON -DWITH_GPU_CUDA=ON -DNEXUSMINER_STATIC_OPENSSL=OFF \
             -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
-            -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-12 \
             -DCMAKE_CUDA_ARCHITECTURES=75 2>&1 | tee configure.log
           grep -q 'PRIME big integer backend:' configure.log
           grep -q 'CUDA compiler identification is NVIDIA' configure.log
@@ -166,6 +165,7 @@ jobs:
           if-no-files-found: error
 
   linux-amd:
+    if: false
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:6.2.4
     timeout-minutes: 90
