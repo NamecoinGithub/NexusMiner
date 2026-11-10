@@ -3,6 +3,7 @@ name: Build 1.5.1 candidate artifacts
 on:
   push:
     branches: [build-1.5.1-candidate]
+    paths: [.github/workflows/build-151-artifacts.yml]
 
 permissions:
   contents: read
@@ -12,7 +13,6 @@ env:
 
 jobs:
   unix-cpu:
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -57,12 +57,22 @@ jobs:
           mkdir -p "dist/$name"
           cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
           cp -R configs "dist/$name/"
+          mkdir -p "dist/$name/third-party-licenses"
+          cp build/candidate/_deps/spdlog-src/LICENSE "dist/$name/third-party-licenses/spdlog.txt"
+          cp build/candidate/_deps/nlohmann_json-src/LICENSE.MIT "dist/$name/third-party-licenses/nlohmann-json.txt"
+          cp build/candidate/_deps/asio-src/asio/COPYING "dist/$name/third-party-licenses/asio.txt"
+          cp build/candidate/_deps/asio-src/asio/LICENSE_1_0.txt "dist/$name/third-party-licenses/boost.txt"
+          cp build/candidate/_deps/primesieve-src/COPYING "dist/$name/third-party-licenses/primesieve.txt"
           printf '%s\n' "$SOURCE_SHA" > "dist/$name/SOURCE_COMMIT.txt"
+          git -C build/candidate/_deps/primesieve-src rev-parse HEAD > "dist/$name/PRIMESIEVE_COMMIT.txt"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: cpu-${{ matrix.platform }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
   windows-cpu:
@@ -158,12 +168,21 @@ jobs:
           mkdir -p "dist/$name"
           cp build/candidate/NexusMiner README.md BUILD.md COPYING example.miner.config "dist/$name/"
           cp -R configs "dist/$name/"
+          mkdir -p "dist/$name/third-party-licenses"
+          cp build/candidate/_deps/spdlog-src/LICENSE "dist/$name/third-party-licenses/spdlog.txt"
+          cp build/candidate/_deps/nlohmann_json-src/LICENSE.MIT "dist/$name/third-party-licenses/nlohmann-json.txt"
+          cp build/candidate/_deps/asio-src/asio/COPYING "dist/$name/third-party-licenses/asio.txt"
+          cp build/candidate/_deps/asio-src/asio/LICENSE_1_0.txt "dist/$name/third-party-licenses/boost.txt"
+          curl -fsSL https://docs.nvidia.com/cuda/archive/12.8.0/eula/index.html > "dist/$name/third-party-licenses/nvidia-cuda-eula.html"
           printf '%s\n' "$SOURCE_SHA" > "dist/$name/SOURCE_COMMIT.txt"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: gpu-linux-nvidia
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
   linux-amd:
